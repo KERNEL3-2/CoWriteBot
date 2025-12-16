@@ -1,4 +1,5 @@
 from setuptools import find_packages, setup
+from glob import glob
 
 package_name = 'cowritebot'
 
@@ -10,10 +11,11 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/launch', glob('launch/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='sieun',
+    maintainer='sgkwon',
     maintainer_email='ssunder7@naver.com',
     description='TODO: Package description',
     license='TODO: License declaration',
@@ -24,6 +26,9 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'controller=controller.controller:main',
+            'hangul=controller.test:main',
+            'realsense2_camera_node=object_detection.realsense:main',
         ],
     },
 )
