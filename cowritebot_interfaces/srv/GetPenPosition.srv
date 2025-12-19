@@ -1,0 +1,10 @@
+---
+bool success
+float64[] center
+float64[] cap_end_2d
+float64[] tip_end_2d
+float64[] cap_end_3d
+float64[] tip_end_3d
+float64[] pen_direction_3d
+float64 angle
+float64 area

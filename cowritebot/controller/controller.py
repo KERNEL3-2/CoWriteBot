@@ -6,6 +6,8 @@ from rclpy.node import Node
 import DR_init
 from std_srvs.srv import Trigger
 from ament_index_python.packages import get_package_share_directory
+from cowritebot_interfaces.srv import GetPenPosition
+import time
 
 package_path = get_package_share_directory('cowritebot')
 ROBOT_ID = "dsr01"
@@ -33,14 +35,34 @@ NUM_OF_GRID_DOT = 5
 
 class BaseController(Node):
     def __init__(self):
-        super().__init__('cowritebot')
+        super().__init__('base_controller_node')
 
         self.open_gripper_client = self.create_client(Trigger, f'/{ROBOT_ID}/gripper/open')
         self.close_gripper_client = self.create_client(Trigger, f'/{ROBOT_ID}/gripper/close')
         self.req = Trigger.Request()
+        self._client = self.create_client(GetPenPosition, 'get_pen_position')
+        while not self._client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('service not available, waiting again...')
+        self.pen_req = GetPenPosition.Request()
         self.down_position_z = 0
 
         self.init_robot()
+    
+    def find_pen(self):
+        # 비동기적으로 요청 전송 (결과를 기다리는 Future 객체 반환)
+        future = self._client.call_async(self.pen_req)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0) # 결과가 올 때까지 대기
+        self.get_logger().info("펜 위치 요청.")
+        
+        if future.result() is not None:
+            response = future.result()
+            if response.success:
+                self.get_logger().info(f"성공: {response}")
+            else:
+                self.get_logger().error(f"실패: {response}")
+        else:
+            # 서비스 호출 자체에 실패한 경우 (서버가 죽었거나 타임아웃 등)
+            self.get_logger().error("서비스 호출 실패")
     
     def init_robot(self):
         # 준비 자세
@@ -48,13 +70,13 @@ class BaseController(Node):
         self.get_logger().info("준비 자세로 이동합니다.")
         movej(JReady, vel=VELOCITY, acc=ACC)
 
-        self.get_logger().info("펜 잡기")
-        self.open_gripper()
-        wait(3)
-        self.close_gripper()
+        # self.get_logger().info("펜 잡기")
+        # self.open_gripper()
+        # wait(3)
+        # self.close_gripper()
 
-        wait(1)
-        self.get_logger().info("글씨 쓸 준비 완료")
+        # wait(1)
+        # self.get_logger().info("글씨 쓸 준비 완료")
     
     def open_gripper(self):
         result = self.open_gripper_client.call_async(self.req)
@@ -176,9 +198,12 @@ def main(args=None):
     node = BaseController()
     try:
         # node.grisp_pen()
-        while rclpy.ok():
-            sentence = input('문자를 입력하세요.')
-            node.typeSentence(sentence)
+        # while rclpy.ok():
+        #     sentence = input('문자를 입력하세요.')
+            # node.typeSentence(sentence)
+        while True:
+            node.find_pen()
+            time.sleep(1)
     except KeyboardInterrupt:
         pass
     finally:
