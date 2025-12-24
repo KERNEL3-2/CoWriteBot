@@ -27,8 +27,7 @@ setup(
     entry_points={
         'console_scripts': [
             'controller=controller.controller:main',
-            'hangul=controller.test:main',
-            'realsense2_camera_node=object_detection.realsense:main',
+            'find_marker=object_detection.find_marker:main',
         ],
     },
 )
