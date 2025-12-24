@@ -6,6 +6,8 @@ from rclpy.node import Node
 import DR_init
 from std_srvs.srv import Trigger
 from ament_index_python.packages import get_package_share_directory
+from .text_to_path import TextToPath
+import matplotlib.pyplot as plt
 
 package_path = get_package_share_directory('cowritebot')
 ROBOT_ID = "dsr01"
@@ -39,6 +41,7 @@ class BaseController(Node):
         self.close_gripper_client = self.create_client(Trigger, f'/{ROBOT_ID}/gripper/close')
         self.req = Trigger.Request()
         self.down_position_z = 0
+        self.ttp = TextToPath()
 
         self.init_robot()
     
@@ -46,14 +49,7 @@ class BaseController(Node):
         # 준비 자세
         JReady = [0, 0, 90, 0, 90, -90]
         self.get_logger().info("준비 자세로 이동합니다.")
-        movej(JReady, vel=VELOCITY, acc=ACC)
-
-        self.get_logger().info("펜 잡기")
-        self.open_gripper()
-        wait(3)
-        self.close_gripper()
-
-        wait(1)
+        movej(JReady, vel=VELOCITY, acc=ACC)        
         self.get_logger().info("글씨 쓸 준비 완료")
     
     def open_gripper(self):
@@ -67,7 +63,11 @@ class BaseController(Node):
         return result.result()
     
     def grisp_pen(self):
-        pass
+        self.get_logger().info("펜 잡기")
+        self.open_gripper()
+        wait(3)
+        self.close_gripper()
+        wait(1)
 
     def movelBeforeWrite(self, posx_array):
         movel(posx(posx_array), vel=50, acc=20)
@@ -85,7 +85,7 @@ class BaseController(Node):
         release_compliance_ctrl() # 모든 작업 완료 후 순응제어 해제
         wait(0.3)  # 안정화
 
-        self.down_position_z = get_current_posx()[0][2] + 0.6
+        self.down_position_z = get_current_posx()[0][2] + 1
 
     def penup(self):
         movel(posx(0, 0, 5, 0, 0, 0), mod=DR_MV_MOD_REL, vel=80,acc=30)
@@ -171,14 +171,53 @@ class BaseController(Node):
 
                 if j + 1 < lp:
                     self.movelBeforeWrite(posx_arrays[j + 1][0])
+    
+    def strokeToPosxList(self, stroke):
+        result = []
+        xs = []
+        ys = []
+        global init_posx
+        for (x, y) in stroke:
+            tmp = init_posx.copy()
+            tmp[0] += x
+            tmp[1] += y
+            xs.append(tmp[0] + x)
+            ys.append(tmp[1] + y)
+            result.append(posx(tmp))
+        
+        return result, xs, ys
+    
+    def typeSentenceHangul(self, sentence):
+        # 메인 루프
+        self.get_logger().info("글씨 쓸 위치로 이동")
+        movel(posx(init_posx), vel=VELOCITY, acc=ACC)
+        
+        _strokes = self.ttp.text_to_path(sentence)
+        lp = len(_strokes)
+
+        strokes = []
+        for stroke in _strokes:
+            arr, *_ = self.strokeToPosxList(stroke)
+            strokes.append(arr)
+
+        for j, stroke in enumerate(strokes):
+            self.get_logger().info(f"pendown")
+            self.pendown()
+            movesx(self.setZ(stroke), vel=80, acc=30)
+            self.get_logger().info(f"penup")
+            self.penup()
+
+            if j + 1 < lp:
+                self.movelBeforeWrite(strokes[j + 1][0])
+    
 
 def main(args=None):
     node = BaseController()
     try:
-        # node.grisp_pen()
+        node.grisp_pen()
         while rclpy.ok():
             sentence = input('문자를 입력하세요.')
-            node.typeSentence(sentence)
+            node.typeSentenceHangul(sentence)
     except KeyboardInterrupt:
         pass
     finally:
