@@ -82,36 +82,56 @@ class TextToPath:
                     break
                     
             # 노이즈 제거 (너무 짧은 획은 버림)
-            if len(current_stroke) > 5:
+            if len(current_stroke) > 10:
                 sorted_strokes.append(current_stroke)
 
         return sorted_strokes
 
-    def convert_pixels_to_robot_mm(self, strokes, scale=0.07):
+    def convert_pixels_to_robot_mm(self, strokes, scale=0.07, downsample_step = 10):
         """
         픽셀 좌표를 로봇 mm 좌표로 변환 및 Y축 반전
         """
         robot_paths = []
         for stroke in strokes:
             new_stroke = []
-            for x, y in stroke:
+            for x, y in stroke[::downsample_step]:
                 # 이미지 좌표계(Y down) -> 로봇 좌표계(Y up) 변환
                 rx = x * scale
                 ry = -y * scale 
                 new_stroke.append((round(rx, 2), round(ry, 2)))
-            robot_paths.append(new_stroke)
+            if len(new_stroke) > 1:
+                robot_paths.append(new_stroke)
         return robot_paths
 
+    def get_min_xy(self, strokes):
+        x_min = float("inf")
+        y_min = float("inf")
+        for stroke in strokes:
+            x_vals, y_vals = zip(*stroke)
+            x_min = min(x_min, *x_vals)
+            y_min = min(y_min, *y_vals)
+        return (x_min, y_min)
+    
+    def text_to_path(self, text) -> list:
+        pixel_strokes = self.text_to_skeleton_paths(text)
+        strokes = self.convert_pixels_to_robot_mm(pixel_strokes)
+        (offset_x, offset_y) = self.get_min_xy(strokes)
+        result = []
+        for stroke in strokes:
+            result.append(list(map(lambda x: (round(x[0] - offset_x, 2), round(x[1] - offset_y, 2)), stroke)))
+        
+        return result
+    
     def visualize_robot_path(self, strokes):
         if not strokes:
             print("시각화할 데이터가 없습니다.")
             return
 
-        plt.figure(figsize=(10, 10))
+        plt.figure(figsize=(10, 6))
         for i, stroke in enumerate(strokes):
             x_vals, y_vals = zip(*stroke)
-            plt.plot(x_vals, y_vals, linestyle='-', label=f'Stroke {i+1}', color='black')
-
+            plt.plot(x_vals, y_vals, marker='.', markersize=4, linestyle='-', label=f'Stroke {i+1}')
+        
         plt.title("Skeletonized Single Line Path")
         plt.xlabel("X (mm)")
         plt.ylabel("Y (mm)")
@@ -121,7 +141,7 @@ class TextToPath:
 
 if __name__ == '__main__':
     ttp = TextToPath()
-    text = "안녕하세요!!"
+    text = "가나다"
     print(f"'{text}' 뼈대 추출 중...")
     
     # 1. 뼈대 픽셀 추출
