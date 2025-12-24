@@ -33,11 +33,8 @@ class FindMarker(Node):
             self.get_logger().info(f'{pen_location_info}')
             response.success = True
             response.center = pen_location_info['center']
-            response.cap_end_2d = pen_location_info['cap_end_2d']
-            response.tip_end_2d = pen_location_info['tip_end_2d']
             response.cap_end_3d = pen_location_info['cap_end_3d']
             response.tip_end_3d = pen_location_info['tip_end_3d']
-            response.pen_direction_3d = pen_location_info['pen_direction_3d']
             response.angle = pen_location_info['angle']
             response.area = pen_location_info['area']
         else:
@@ -80,32 +77,58 @@ class FindMarker(Node):
         return (np.array([h_min, s_min, v_min]), 
                 np.array([h_max, s_max, v_max]),
                 max(min_area, 10))  # 최소 10
-
+    
     def get_3d_point(self, x, y, depth_array):
-        """2D 픽셀 좌표를 3D 카메라 좌표로 변환"""
-        height, width = depth_array.shape
-        x = int(max(0, min(x, width - 1)))
-        y = int(max(0, min(y, height - 1)))
-        
-        depth_mm = depth_array[y, x]
-        if depth_mm == 0:
-            return None
-        
-        depth_m = depth_mm * 0.001
-        
-        if isinstance(self.intrinsics, dict):
-            _intrinsics = rs.intrinsics()
-            _intrinsics.width = width
-            _intrinsics.height = height
-            _intrinsics.ppx = self.intrinsics['ppx']
-            _intrinsics.ppy = self.intrinsics['ppy']
-            _intrinsics.fx = self.intrinsics['fx']
-            _intrinsics.fy = self.intrinsics['fy']
-        else:
-            _intrinsics = self.intrinsics
+        """
+        x, y: 이미지상의 픽셀 좌표 (pixel)
+        depth: 해당 픽셀의 깊이 값 (m 또는 mm)
+        fx, fy: 초점 거리 (camera_info의 K[0], K[4])
+        ppx, ppy: 주점 (camera_info의 K[2], K[5])
 
-        point_3d = rs.rs2_deproject_pixel_to_point(_intrinsics, [float(x), float(y)], depth_m)
-        return point_3d
+        Joint 좌표계 [0, 0, 90, 0, 90, 0]의 posx: [373.000, 0.000, 405.000, 149.678, 180.000, 59.678]
+        """
+        
+        # 0. 깊이 값이 0이면 (인식 불가) 계산 불가
+        depth_mm = depth_array[y, x]
+        if depth_mm <= 0:
+            return None
+
+        # 1. 픽셀 좌표를 카메라 중심 기준(Optical Center)으로 이동
+        # ppx, ppy를 빼서 이미지 중앙을 (0,0)으로 만듭니다.
+        x_normalized = (x - self.intrinsics['ppx']) / self.intrinsics['fx']
+        y_normalized = (y - self.intrinsics['ppy']) / self.intrinsics['fy']
+        
+        # 2. 정규 좌표에 깊이(Z)를 곱해 실제 3D 좌표 계산
+        X = x_normalized * depth_mm
+        Y = y_normalized * depth_mm
+        Z = depth_mm
+        
+        return np.array([X, Y, Z])
+    
+    def transform_to_robot_base(self, point_cam):
+        """
+        point_cam: [X, Y, Z] (카메라 기준 3D 좌표)
+        H_base2cam: 4x4 변환 행렬 (Calibration 결과물)
+        """
+        if point_cam is None:
+            return None
+
+        # 1. 3D 좌표를 동차 좌표(Homogeneous Coordinates)로 변환 [X, Y, Z, 1]
+        point_homog = np.append(point_cam, 1.0)
+
+        # 캘리브레이션으로 행렬
+        H_base2cam = np.array([
+            [0, -1, 0, 0.3],  # 카메라가 로봇 베이스에서 X방향으로 0.3m 떨어짐
+            [1, 0, 0, 0.0], # Y축은 일치한다고 가정
+            [0, 0, 1, 1.0],  # 카메라 높이가 책상으로부터 1m 떨어짐
+            [0, 0, 0, 1]
+        ])
+        
+        # 2. 행렬 곱셈 수행: P_base = H_base2cam * P_cam
+        point_base_homog = H_base2cam @ point_homog
+        
+        # 3. 다시 [X, Y, Z]로 반환
+        return point_base_homog[:3]
 
     def detect_pen(self, color_image, depth_frame, hsv_lower, hsv_upper, min_area):
         # [시각화] 원본 이미지를 복사하여 그림 그릴 준비
@@ -179,34 +202,22 @@ class FindMarker(Node):
         cv2.line(vis_img, cap_end, tip_end, (0, 255, 255), 2) # Yellow Line
 
         # 3D 좌표 계산
-        cap_3d = self.get_3d_point(cap_end[0], cap_end[1], depth_frame)
-        tip_3d = self.get_3d_point(tip_end[0], tip_end[1], depth_frame)
+        cap_3d = self.transform_to_robot_base(self.get_3d_point(cap_end[0], cap_end[1], depth_frame))
+        tip_3d = self.transform_to_robot_base(self.get_3d_point(tip_end[0], tip_end[1], depth_frame))
         
-        pen_direction_3d = None
-        if cap_3d and tip_3d:
-            direction = np.array(tip_3d) - np.array(cap_3d)
-            norm = np.linalg.norm(direction)
-            if norm > 0:
-                pen_direction_3d = direction / norm
-        
-        if center is None or cap_end is None or tip_end is None or cap_3d is None \
-            or tip_3d is None or pen_direction_3d is None:
+        if cap_3d is None or tip_3d is None:
             return None
         
         center = list(map(float, center))
         cap_end = list(map(float, cap_end))
         tip_end = list(map(float, tip_end))
-        cap_3d = list(map(float, cap_3d))
-        tip_3d = list(map(float, tip_3d))
-        pen_direction_3d = list(map(float, pen_direction_3d))
+        cap_3d = list(map(lambda x: round(x, 2), cap_3d))
+        tip_3d = list(map(lambda x: round(x, 2), tip_3d))
         
         result = {
             'center': center,
-            'cap_end_2d': cap_end,
-            'tip_end_2d': tip_end,
             'cap_end_3d': cap_3d,
             'tip_end_3d': tip_3d,
-            'pen_direction_3d': pen_direction_3d,
             'angle': angle,
             'area': area
         }
