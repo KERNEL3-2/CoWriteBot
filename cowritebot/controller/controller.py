@@ -210,6 +210,24 @@ class BaseController(Node):
             if j + 1 < lp:
                 self.movelBeforeWrite(strokes[j + 1][0])
     
+    def visualize_robot_path(self, sentence):
+        strokes = self.ttp.text_to_path(sentence)
+        if not strokes:
+            print("시각화할 데이터가 없습니다.")
+            return
+
+        plt.figure(figsize=(10, 6))
+
+        for stroke in strokes:
+            _, xs, ys = self.strokeToPosxList(stroke)
+            plt.plot(xs, ys, marker='.', markersize=4, linestyle='-', label=f'Stroke ')
+        
+        plt.title("Skeletonized Single Line Path")
+        plt.xlabel("X (mm)")
+        plt.ylabel("Y (mm)")
+        plt.axis('equal')
+        plt.grid(True)
+        plt.show()
 
 def main(args=None):
     node = BaseController()
@@ -217,7 +235,8 @@ def main(args=None):
         node.grisp_pen()
         while rclpy.ok():
             sentence = input('문자를 입력하세요.')
-            node.typeSentenceHangul(sentence)
+            # node.typeSentenceHangul(sentence)
+            node.visualize_robot_path(sentence)
     except KeyboardInterrupt:
         pass
     finally:
