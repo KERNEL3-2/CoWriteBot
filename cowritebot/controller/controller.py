@@ -107,7 +107,7 @@ class BaseController(Node):
         release_compliance_ctrl() # 모든 작업 완료 후 순응제어 해제
         wait(0.3)  # 안정화
 
-        self.down_position_z = get_current_posx()[0][2] + 1
+        self.down_position_z = get_current_posx()[0][2] + 0.6
 
     def penup(self):
         movel(posx(0, 0, 5, 0, 0, 0), mod=DR_MV_MOD_REL, vel=80,acc=30)
@@ -222,15 +222,13 @@ class BaseController(Node):
             arr, *_ = self.strokeToPosxList(stroke)
             strokes.append(arr)
 
-        for j, stroke in enumerate(strokes):
+        for stroke in strokes:
+            self.movelBeforeWrite(stroke[0])
             self.get_logger().info(f"pendown")
             self.pendown()
             movesx(self.setZ(stroke), vel=80, acc=30)
             self.get_logger().info(f"penup")
             self.penup()
-
-            if j + 1 < lp:
-                self.movelBeforeWrite(strokes[j + 1][0])
     
     def visualize_robot_path(self, sentence):
         strokes = self.ttp.text_to_path(sentence)
