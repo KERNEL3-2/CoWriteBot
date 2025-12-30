@@ -12,8 +12,8 @@ Isaac Lab 기반 강화학습으로 로봇이 펜을 적절한 자세로 잡는 
 
 | 레포지토리 | 설명 |
 |-----------|------|
-| **[CoWriteBotRL](https://github.com/fhekwn549/CoWriteBotRL)** | Isaac Lab 기반 강화학습 환경 및 학습 스크립트 |
-| **[e0509_gripper_description](https://github.com/fhekwn549/e0509_gripper_description)** | ROS2 로봇 패키지 (URDF, launch, 그리퍼 제어) |
+| **[e0509_gripper_description](https://github.com/KERNEL3-2/e0509_gripper_description)** | ROS2 로봇 패키지 (URDF, launch, 그리퍼 제어) |
+| **[CoWriteBotRL](https://github.com/KERNEL3-2/CoWriteBotRL)** | Isaac Lab 기반 강화학습 환경 및 학습 스크립트 |
 | **[sim2real](https://github.com/KERNEL3-2/sim2real)** | 강화학습을 통한 로봇 제어 파이프라인 | 
 
 
@@ -41,13 +41,16 @@ mkdir -p ~/doosan_ws/src
 cd ~/doosan_ws/src
 
 # Doosan 드라이버 (포크 버전 - Flange Serial 지원)
-git clone -b humble https://github.com/fhekwn549/doosan-robot2.git
+git clone -b humble https://github.com/KERNEL3-2/doosan-robot2.git
 
 # 그리퍼 패키지
 git clone https://github.com/ROBOTIS-GIT/RH-P12-RN-A.git
 
 # 로봇 description 패키지
-git clone https://github.com/fhekwn549/e0509_gripper_description.git
+git clone https://github.com/KERNEL3-2/e0509_gripper_description.git
+
+# 글씨 쓰기 패키지
+git clone https://github.com/KERNEL3-2/CoWriteBot.git
 
 # 빌드
 cd ~/doosan_ws
@@ -59,7 +62,7 @@ source install/setup.bash
 ### 2. Sim2Real 레포 클론
 ```bash
 cd ~
-git clone https://github.com/fhekwn549/sim2real.git
+git clone https://github.com/KERNEL3-2/sim2real.git
 ```
 
 ### 3. Python 의존성 설치
@@ -91,25 +94,24 @@ export PYTHONPATH=$PYTHONPATH:~/sim2real
 ```bash
 source ~/isaacsim_env/bin/activate
 cd ~/CoWriteBotRL
-python pen_grasp_rl/scripts/train_v7.py --headless --num_envs 4096 --max_iterations 100000
+python pen_grasp_rl/scripts/train_v7.py --headless --num_envs <num_envs> --max_iterations <num_iter>
 ```
 
 ### 2. 학습된 정책 테스트 (시뮬레이션)
 ```bash
-python pen_grasp_rl/scripts/play_v7.py --checkpoint ~/ikv7/model_99999.pt
+python pen_grasp_rl/scripts/play_v7.py --checkpoint <model_path>
 ```
 
 ### 3. 실제 로봇 실행
 ```bash
 # 터미널 1: 로봇 bringup
-ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=192.168.137.100
+ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=<robot_ip>
 
 # 터미널 2: Sim2Real 실행
 cd ~/sim2real/sim2real
-python run_sim2real.py --checkpoint ~/ikv7/model_99999.pt
+python run_sim2real.py --checkpoint <model_path>
 
 # 터미널 3: 글씨 쓰기 실행
-cd ~/sim2real/sim2real
 ros2 run cowritebot controller
 ```
 
