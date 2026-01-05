@@ -94,16 +94,25 @@ class GerberToPath:
                 if arc_points:
                     traces.append(arc_points)
 
+            elif isinstance(obj, Flash):
+                # Flash = 패드 (D03 명령)
+                x = float(obj.x) * self.scale + self.offset_x
+                y = float(obj.y) * self.scale + self.offset_y
+                pads.append((x, y))
+
         # 패드 중복 제거 (같은 위치의 십자 패드 등)
         pads = self._deduplicate_points(pads, tolerance=0.5)
 
         # 트레이스 병합
         merged_traces = self._merge_connected_strokes(traces)
 
+        # 닫힌 도형 필터링 (IC 외곽선 등)
+        open_traces = self._filter_closed_shapes(merged_traces)
+
         if separate_pads:
-            return merged_traces, pads
+            return open_traces, pads
         else:
-            return merged_traces
+            return open_traces
 
     def _deduplicate_points(self, points: List[Tuple[float, float]],
                            tolerance: float = 0.5) -> List[Tuple[float, float]]:
@@ -260,7 +269,52 @@ class GerberToPath:
         # 경로 방향 정규화 (왼쪽 하단에서 시작하도록)
         normalized = self._normalize_stroke_direction(merged)
 
-        return normalized
+        # 백트래킹(왔다갔다) 제거
+        cleaned = self._remove_backtracking(normalized)
+
+        return cleaned
+
+    def _remove_backtracking(self, strokes: List[List[Tuple[float, float]]]) -> List[List[Tuple[float, float]]]:
+        """
+        경로 내 백트래킹 제거 - 왔다갔다하는 경로를 분리
+        """
+        result = []
+        for stroke in strokes:
+            if len(stroke) <= 2:
+                result.append(stroke)
+                continue
+
+            # 각 점에서 방향 변화 체크
+            segments = []
+            current_segment = [stroke[0]]
+
+            for i in range(1, len(stroke)):
+                current_segment.append(stroke[i])
+
+                if i < len(stroke) - 1:
+                    # 방향 벡터 계산
+                    v1 = (stroke[i][0] - stroke[i-1][0], stroke[i][1] - stroke[i-1][1])
+                    v2 = (stroke[i+1][0] - stroke[i][0], stroke[i+1][1] - stroke[i][1])
+
+                    # 내적으로 방향 변화 확인 (음수면 반대 방향)
+                    dot = v1[0] * v2[0] + v1[1] * v2[1]
+                    len1 = (v1[0]**2 + v1[1]**2) ** 0.5
+                    len2 = (v2[0]**2 + v2[1]**2) ** 0.5
+
+                    if len1 > 0.01 and len2 > 0.01:
+                        cos_angle = dot / (len1 * len2)
+                        # 거의 반대 방향이면 (각도 > 120도) 분리
+                        if cos_angle < -0.5:
+                            if len(current_segment) >= 2:
+                                segments.append(current_segment)
+                            current_segment = [stroke[i]]
+
+            if len(current_segment) >= 2:
+                segments.append(current_segment)
+
+            result.extend(segments)
+
+        return result
 
     def _normalize_stroke_direction(self, strokes: List[List[Tuple[float, float]]]) -> List[List[Tuple[float, float]]]:
         """경로 방향 정규화 - 시작점이 끝점보다 왼쪽 또는 아래에 오도록"""
@@ -281,6 +335,28 @@ class GerberToPath:
                 result.append(stroke)
 
         return result
+
+    def _filter_closed_shapes(self, strokes: List[List[Tuple[float, float]]],
+                              tolerance: float = 0.5) -> List[List[Tuple[float, float]]]:
+        """
+        닫힌 도형 필터링 (IC 외곽선, 컴포넌트 심볼 등)
+        시작점과 끝점이 가까운 폐곡선은 납땜 경로가 아니므로 제외
+        """
+        open_strokes = []
+        for stroke in strokes:
+            if len(stroke) < 2:
+                continue
+
+            start = stroke[0]
+            end = stroke[-1]
+
+            # 시작점과 끝점이 가까우면 닫힌 도형
+            if self._distance(start, end) < tolerance:
+                continue  # 폐곡선 제외
+
+            open_strokes.append(stroke)
+
+        return open_strokes
 
     def _distance(self, p1: Tuple[float, float], p2: Tuple[float, float]) -> float:
         """두 점 사이의 거리"""
