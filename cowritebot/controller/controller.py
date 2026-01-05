@@ -12,6 +12,14 @@ from .text_to_path import TextToPath
 import time
 import matplotlib.pyplot as plt
 
+# Gerber 지원 (선택적)
+try:
+    from .gerber_to_path import GerberToPath, DummyGerberToPath, GERBONARA_AVAILABLE
+    GERBER_SUPPORT = True
+except ImportError:
+    GERBER_SUPPORT = False
+    GERBONARA_AVAILABLE = False
+
 package_path = get_package_share_directory('cowritebot')
 ROBOT_ID = "dsr01"
 ROBOT_MODEL = "e0509"
@@ -242,7 +250,7 @@ class BaseController(Node):
         for stroke in strokes:
             _, xs, ys = self.strokeToPosxList(stroke)
             plt.plot(xs, ys, marker='.', markersize=4, linestyle='-', label=f'Stroke ')
-        
+
         plt.title("Skeletonized Single Line Path")
         plt.xlabel("X (mm)")
         plt.ylabel("Y (mm)")
@@ -250,15 +258,154 @@ class BaseController(Node):
         plt.grid(True)
         plt.show()
 
+    def drawGerberPath(self, gerber_path: str, scale: float = 1.0):
+        """
+        Gerber 파일에서 경로를 추출하여 그리기
+
+        Args:
+            gerber_path: Gerber 파일 경로 (.gbr, .gtl 등)
+            scale: 스케일 팩터
+        """
+        if not GERBER_SUPPORT:
+            self.get_logger().error("Gerber 지원이 활성화되지 않았습니다.")
+            return
+
+        self.get_logger().info(f"Gerber 파일 로드: {gerber_path}")
+
+        if GERBONARA_AVAILABLE:
+            gtp = GerberToPath(scale=scale)
+            strokes = gtp.gerber_to_path(gerber_path)
+            strokes = gtp.normalize_to_origin(strokes)
+        else:
+            self.get_logger().warn("gerbonara 미설치 - 샘플 데이터 사용")
+            gtp = DummyGerberToPath(scale=scale)
+            strokes = gtp.generate_sample_pcb_traces()
+
+        if not strokes:
+            self.get_logger().error("경로를 추출할 수 없습니다.")
+            return
+
+        self.get_logger().info(f"추출된 경로: {len(strokes)}개")
+
+        # 글씨 쓸 위치로 이동
+        self.get_logger().info("작업 위치로 이동")
+        movel(posx(init_posx), vel=VELOCITY, acc=ACC)
+
+        # 각 stroke 그리기
+        for i, stroke in enumerate(strokes):
+            if len(stroke) < 2:
+                continue
+
+            # stroke를 로봇 좌표로 변환
+            robot_stroke = []
+            for (x, y) in stroke:
+                tmp = init_posx.copy()
+                tmp[0] += x
+                tmp[1] += y
+                robot_stroke.append(posx(tmp))
+
+            self.get_logger().info(f"Stroke {i+1}/{len(strokes)} 그리기 ({len(stroke)} points)")
+            self.movelBeforeWrite(robot_stroke[0])
+            self.pendown()
+            movesx(self.setZ(robot_stroke), vel=80, acc=30)
+            self.penup()
+
+        self.get_logger().info("Gerber 경로 그리기 완료!")
+
+    def drawDrillPoints(self, excellon_path: str, scale: float = 1.0):
+        """
+        Excellon 드릴 파일에서 포인트 추출하여 점 찍기 (납땜 포인트)
+
+        Args:
+            excellon_path: Excellon 파일 경로 (.drl, .xln 등)
+            scale: 스케일 팩터
+        """
+        if not GERBER_SUPPORT:
+            self.get_logger().error("Gerber 지원이 활성화되지 않았습니다.")
+            return
+
+        self.get_logger().info(f"Excellon 파일 로드: {excellon_path}")
+
+        if GERBONARA_AVAILABLE:
+            gtp = GerberToPath(scale=scale)
+            points = gtp.excellon_to_points(excellon_path)
+        else:
+            self.get_logger().warn("gerbonara 미설치 - 샘플 데이터 사용")
+            gtp = DummyGerberToPath(scale=scale)
+            points = gtp.generate_sample_drill_points()
+
+        if not points:
+            self.get_logger().error("포인트를 추출할 수 없습니다.")
+            return
+
+        self.get_logger().info(f"추출된 드릴 포인트: {len(points)}개")
+
+        # 작업 위치로 이동
+        self.get_logger().info("작업 위치로 이동")
+        movel(posx(init_posx), vel=VELOCITY, acc=ACC)
+
+        # 각 포인트에서 점 찍기
+        for i, (x, y) in enumerate(points):
+            tmp = init_posx.copy()
+            tmp[0] += x
+            tmp[1] += y
+
+            self.get_logger().info(f"Point {i+1}/{len(points)}: ({x:.1f}, {y:.1f})")
+            self.movelBeforeWrite(tmp)
+            self.pendown()
+            wait(0.3)  # 잠시 대기 (점 찍기)
+            self.penup()
+
+        self.get_logger().info("드릴 포인트 작업 완료!")
+
+    def visualize_gerber_path(self, gerber_path: str, scale: float = 1.0):
+        """Gerber 경로 시각화"""
+        if not GERBER_SUPPORT:
+            print("Gerber 지원이 활성화되지 않았습니다.")
+            return
+
+        if GERBONARA_AVAILABLE:
+            gtp = GerberToPath(scale=scale)
+            strokes = gtp.gerber_to_path(gerber_path)
+            strokes = gtp.normalize_to_origin(strokes)
+        else:
+            print("gerbonara 미설치 - 샘플 데이터 사용")
+            gtp = DummyGerberToPath(scale=scale)
+            strokes = gtp.generate_sample_pcb_traces()
+
+        if hasattr(gtp, 'visualize'):
+            gtp.visualize(strokes, title=f"Gerber: {gerber_path}")
+        else:
+            # DummyGerberToPath용 시각화
+            plt.figure(figsize=(10, 8))
+            for stroke in strokes:
+                x_vals = [p[0] for p in stroke]
+                y_vals = [p[1] for p in stroke]
+                plt.plot(x_vals, y_vals, 'b-', linewidth=2)
+            plt.title(f"Gerber Path (Sample)")
+            plt.xlabel("X (mm)")
+            plt.ylabel("Y (mm)")
+            plt.axis('equal')
+            plt.grid(True, alpha=0.3)
+            plt.show()
+
 def main(args=None):
     # 명령줄 인자 파싱
     parser = argparse.ArgumentParser(description='CoWriteBot Controller')
     parser.add_argument('--sentence', '-s', type=str, default=None,
                        help='쓸 문장 (한글 또는 영어)')
+    parser.add_argument('--gerber', '-g', type=str, default=None,
+                       help='Gerber 파일 경로 (.gbr, .gtl 등)')
+    parser.add_argument('--drill', '-d', type=str, default=None,
+                       help='Excellon 드릴 파일 경로 (.drl, .xln 등)')
+    parser.add_argument('--scale', type=float, default=1.0,
+                       help='Gerber/드릴 스케일 팩터 (기본: 1.0)')
     parser.add_argument('--skip-grasp', action='store_true',
                        help='펜 잡기 스킵 (이미 잡은 상태)')
     parser.add_argument('--visualize', '-v', action='store_true',
                        help='경로 시각화만 하고 종료')
+    parser.add_argument('--sample-pcb', action='store_true',
+                       help='샘플 PCB 패턴 그리기 (테스트용)')
 
     # ROS2 args와 분리
     parsed_args, remaining = parser.parse_known_args()
@@ -266,16 +413,33 @@ def main(args=None):
     node = BaseController()
     try:
         # 시각화 모드
-        if parsed_args.visualize and parsed_args.sentence:
-            node.visualize_robot_path(parsed_args.sentence)
+        if parsed_args.visualize:
+            if parsed_args.sentence:
+                node.visualize_robot_path(parsed_args.sentence)
+            elif parsed_args.gerber:
+                node.visualize_gerber_path(parsed_args.gerber, parsed_args.scale)
+            elif parsed_args.sample_pcb:
+                node.visualize_gerber_path(None, parsed_args.scale)  # 샘플 데이터
             return
 
         # 펜 잡기 (skip-grasp 옵션이 없으면)
         if not parsed_args.skip_grasp:
             node.grisp_pen()
 
-        # 문장이 주어지면 해당 문장 쓰기
-        if parsed_args.sentence:
+        # Gerber 모드
+        if parsed_args.gerber:
+            node.get_logger().info(f"Gerber 파일 그리기: {parsed_args.gerber}")
+            node.drawGerberPath(parsed_args.gerber, parsed_args.scale)
+        # 드릴 모드
+        elif parsed_args.drill:
+            node.get_logger().info(f"드릴 포인트 그리기: {parsed_args.drill}")
+            node.drawDrillPoints(parsed_args.drill, parsed_args.scale)
+        # 샘플 PCB 모드
+        elif parsed_args.sample_pcb:
+            node.get_logger().info("샘플 PCB 패턴 그리기")
+            node.drawGerberPath(None, parsed_args.scale)  # gerbonara 없으면 샘플 데이터 사용
+        # 문장 모드
+        elif parsed_args.sentence:
             node.get_logger().info(f"'{parsed_args.sentence}' 쓰기 시작")
             node.typeSentenceHangul(parsed_args.sentence)
             node.get_logger().info("쓰기 완료!")
