@@ -103,16 +103,76 @@ python pen_grasp_rl/scripts/play_v7.py --checkpoint <model_path>
 ```
 
 ### 3. 실제 로봇 실행
+
+#### 방법 A: 통합 런처 사용 (권장)
 ```bash
 # 터미널 1: 로봇 bringup
 ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=<robot_ip>
 
-# 터미널 2: Sim2Real 실행
-cd ~/sim2real/sim2real
-python run_sim2real.py --checkpoint <model_path>
+# 터미널 2: 런처 실행 (펜 접근 → 펜 잡기 → 글씨 쓰기 자동 진행)
+~/CoWriteBot/pen_write_launcher.py -s "안녕하세요"
+```
 
-# 터미널 3: 글씨 쓰기 실행
-ros2 run cowritebot controller
+#### 방법 B: 단계별 수동 실행
+```bash
+# 터미널 1: 로봇 bringup
+ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=<robot_ip>
+
+# 터미널 2: Sim2Real 실행 (펜 위치로 접근)
+cd ~/sim2real/sim2real
+python3 run_sim2real.py --checkpoint <model_path>
+
+# 터미널 3: 글씨 쓰기 실행 (펜 잡기 + 글씨 쓰기)
+source ~/CoWriteBot/install/setup.bash
+ros2 run cowritebot controller --sentence "안녕하세요"
+```
+
+## 실행 흐름
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    pen_write_launcher.py                     │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│  [1] sim2real (run_sim2real.py --auto-start --auto-exit)    │
+│                                                              │
+│   • YOLO로 펜 캡 위치/방향 감지                              │
+│   • RL Policy가 TCP 델타 계산                                │
+│   • Differential IK로 관절 각도 변환                         │
+│   • 로봇 이동 → 펜 캡 2cm 이내 도달 시 자동 종료             │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│  [2] controller (ros2 run cowritebot controller)            │
+│                                                              │
+│   • grisp_pen(): 그리퍼 열기 → 닫기 (펜 잡기)               │
+│   • TextToPath: 텍스트 → 로봇 경로 변환                      │
+│   • pendown(): 힘제어로 펜 내리기                            │
+│   • movesx(): 경로 따라 이동 (글씨 쓰기)                     │
+│   • penup(): 펜 올리기 → 완료                                │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## 런처 옵션
+
+```bash
+# 기본 사용
+~/CoWriteBot/pen_write_launcher.py -s "문장"
+
+# 수동 시작 (sim2real에서 'g' 키로 시작)
+~/CoWriteBot/pen_write_launcher.py -s "문장" --manual-start
+
+# sim2real 스킵 (이미 펜 근처에 있을 때)
+~/CoWriteBot/pen_write_launcher.py -s "문장" --skip-approach
+
+# 펜 잡기 스킵 (이미 펜을 잡고 있을 때)
+~/CoWriteBot/pen_write_launcher.py -s "문장" --skip-grasp
+
+# 테스트 (실제 실행 없이 명령만 확인)
+~/CoWriteBot/pen_write_launcher.py -s "문장" --dry-run
 ```
 
 

@@ -1,4 +1,5 @@
 import sys, os
+import argparse
 from scipy.spatial.transform import Rotation
 import numpy as np
 import rclpy
@@ -250,16 +251,42 @@ class BaseController(Node):
         plt.show()
 
 def main(args=None):
+    # 명령줄 인자 파싱
+    parser = argparse.ArgumentParser(description='CoWriteBot Controller')
+    parser.add_argument('--sentence', '-s', type=str, default=None,
+                       help='쓸 문장 (한글 또는 영어)')
+    parser.add_argument('--skip-grasp', action='store_true',
+                       help='펜 잡기 스킵 (이미 잡은 상태)')
+    parser.add_argument('--visualize', '-v', action='store_true',
+                       help='경로 시각화만 하고 종료')
+
+    # ROS2 args와 분리
+    parsed_args, remaining = parser.parse_known_args()
+
     node = BaseController()
     try:
-        node.grisp_pen()
-        # while rclpy.ok():
-            # sentence = input('문자를 입력하세요.')
-            # node.typeSentenceHangul(sentence)
-            # node.visualize_robot_path(sentence)
-        while True:
-            node.find_pen()
-            time.sleep(1)
+        # 시각화 모드
+        if parsed_args.visualize and parsed_args.sentence:
+            node.visualize_robot_path(parsed_args.sentence)
+            return
+
+        # 펜 잡기 (skip-grasp 옵션이 없으면)
+        if not parsed_args.skip_grasp:
+            node.grisp_pen()
+
+        # 문장이 주어지면 해당 문장 쓰기
+        if parsed_args.sentence:
+            node.get_logger().info(f"'{parsed_args.sentence}' 쓰기 시작")
+            node.typeSentenceHangul(parsed_args.sentence)
+            node.get_logger().info("쓰기 완료!")
+        else:
+            # 문장이 없으면 인터랙티브 모드
+            while rclpy.ok():
+                sentence = input('문자를 입력하세요 (종료: q): ')
+                if sentence.lower() == 'q':
+                    break
+                if sentence.strip():
+                    node.typeSentenceHangul(sentence)
     except KeyboardInterrupt:
         pass
     finally:
@@ -267,6 +294,37 @@ def main(args=None):
         release_compliance_ctrl()
         node.destroy_node()
         rclpy.shutdown()
+
+
+def main_launcher(sentence: str, skip_grasp: bool = False):
+    """런처에서 호출용 함수
+
+    Args:
+        sentence: 쓸 문장
+        skip_grasp: True면 펜 잡기 스킵
+
+    Returns:
+        bool: 성공 여부
+    """
+    node = BaseController()
+    try:
+        if not skip_grasp:
+            node.grisp_pen()
+
+        if sentence:
+            node.get_logger().info(f"'{sentence}' 쓰기 시작")
+            node.typeSentenceHangul(sentence)
+            node.get_logger().info("쓰기 완료!")
+        return True
+    except Exception as e:
+        node.get_logger().error(f"오류 발생: {e}")
+        return False
+    finally:
+        release_force()
+        release_compliance_ctrl()
+        node.destroy_node()
+        rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
