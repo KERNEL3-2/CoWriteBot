@@ -160,19 +160,19 @@ ros2 run cowritebot controller --sentence "안녕하세요"
 
 ```bash
 # 기본 사용
-~/CoWriteBot/pen_write_launcher.py -s "문장"
+~/CoWriteBot/cowritebot/pen_write_launcher.py -s "문장"
 
 # 수동 시작 (sim2real에서 'g' 키로 시작)
-~/CoWriteBot/pen_write_launcher.py -s "문장" --manual-start
+~/CoWriteBot/cowritebot/pen_write_launcher.py -s "문장" --manual-start
 
 # sim2real 스킵 (이미 펜 근처에 있을 때)
-~/CoWriteBot/pen_write_launcher.py -s "문장" --skip-approach
+~/CoWriteBot/cowritebot/pen_write_launcher.py -s "문장" --skip-approach
 
 # 펜 잡기 스킵 (이미 펜을 잡고 있을 때)
-~/CoWriteBot/pen_write_launcher.py -s "문장" --skip-grasp
+~/CoWriteBot/cowritebot/pen_write_launcher.py -s "문장" --skip-grasp
 
 # 테스트 (실제 실행 없이 명령만 확인)
-~/CoWriteBot/pen_write_launcher.py -s "문장" --dry-run
+~/CoWriteBot/cowritebot/pen_write_launcher.py -s "문장" --dry-run
 ```
 
 
