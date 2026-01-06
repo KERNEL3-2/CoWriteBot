@@ -19,7 +19,7 @@ import numpy as np
 def visualize_gerber(filepath=None, separate_pads=False, output=None):
     """Gerber 파일 변환 과정 시각화"""
 
-    from .gerber_to_path import (
+    from gerber_to_path import (
         GerberToPath, DummyGerberToPath, GERBONARA_AVAILABLE
     )
 

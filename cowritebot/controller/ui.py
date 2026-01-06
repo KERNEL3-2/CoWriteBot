@@ -7,49 +7,67 @@ from PyQt6.QtGui import QPixmap, QDragEnterEvent, QDropEvent, QPalette, QColor
 from PyQt6.QtCore import Qt, pyqtSignal
 import rclpy
 from text_to_path import TextToPath
-from image_to_path import ImageToPath
+from gerber_to_path import GerberToPath
 from rclpy.node import Node
 from cowritebot_interfaces.srv import UserInput
+from visualize_gerber import visualize_gerber
 
-# --- [이전과 동일한 커스텀 이미지 박스 클래스] ---
-class ImageUploadBox(QLabel):
+# --- [이전과 동일한 커스텀 파일 박스 클래스] ---
+class FileUploadBox(QLabel):
 
-    image_loaded = pyqtSignal(bool) # 클래스 변수 : 모든 객체가 값을 공유
+    file_selected = pyqtSignal(bool) # 클래스 변수 : 모든 객체가 값을 공유
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.file_path = None # 멤버 변수 : 객체별로 값이 다 다름
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setText("\n이곳을 클릭하거나\n이미지를 드래그하여 업로드하세요.\n")
+        self.setText("\n이곳을 클릭하거나\n.gbr 파일을 드래그하여 업로드하세요.\n")
         self.set_default_style()
         self.setFixedSize(380, 200)
         self.setAcceptDrops(True)
+        self.setWordWrap(True)
 
     def set_default_style(self):
         self.setStyleSheet("border: 2px dashed #aaa; background-color: #f0f0f0; border-radius: 10px; color: #555;")
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            fname, _ = QFileDialog.getOpenFileName(self, '이미지 선택', '', 'Images (*.png *.jpg *.jpeg)')
-            if fname: self.load_image(fname)
+            fname, _ = QFileDialog.getOpenFileName(self, '.gbr 파일 선택', '../samples', 'Gerber Files (*.gbr)')
+            if fname: self.handle_file(fname)
 
     def dragEnterEvent(self, event: QDragEnterEvent):
-        if event.mimeData().hasUrls(): event.accept()
+        if event.mimeData().hasUrls():
+            event.accept()
+            self.setStyleSheet("border: 2px solid #3daee9; background-color: #e0f7fa; border-radius: 10px;")
+        else:
+            event.ignore()
     
     def dropEvent(self, event: QDropEvent):
         files = [u.toLocalFile() for u in event.mimeData().urls()]
-        if files and self.is_image_file(files[0]): self.load_image(files[0])
+        if files:
+            self.handle_file(files[0])
 
-    def is_image_file(self, path):
-        return os.path.splitext(path)[1].lower() in ['.png', '.jpg', '.jpeg', '.bmp']
-
-    def load_image(self, file_path):
+    def handle_file(self, file_path):
+        """파일 종류에 따라 화면 표시를 다르게 처리"""
         self.file_path = file_path
-        self.image_loaded.emit(True) # = update_button_state(True)
-        pixmap = QPixmap(file_path)
-        scaled = pixmap.scaled(self.width()-10, self.height()-10, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        self.setPixmap(scaled)
-        self.setStyleSheet("border: 1px solid #ccc; background-color: white; border-radius: 10px;")
+        ext = os.path.splitext(file_path)[1].lower()
+        file_name = os.path.basename(file_path)
+
+        # 파일 파일인 경우 미리보기
+        if ext in ['.png', '.jpg', '.jpeg', '.bmp', '.gif']:
+            pixmap = QPixmap(file_path)
+            scaled = pixmap.scaled(self.width()-20, self.height()-20, 
+                                   Qt.AspectRatioMode.KeepAspectRatio, 
+                                   Qt.TransformationMode.SmoothTransformation)
+            self.setPixmap(scaled)
+            self.setStyleSheet("border: 1px solid #ccc; background-color: white; border-radius: 10px;")
+        else:
+            # 일반 파일인 경우 아이콘 모양과 파일명 표시
+            self.setPixmap(QPixmap()) # 기존 파일 제거
+            self.setText(f"📄\n\n파일이 선택되었습니다:\n{file_name}")
+            self.setStyleSheet("border: 1px solid #3daee9; background-color: #ffffff; border-radius: 10px; color: #333; font-weight: bold;")
+        
+        self.file_selected.emit(True)
 
 # --- [메인 애플리케이션 클래스] ---
 class MainUI(QWidget):
@@ -57,11 +75,11 @@ class MainUI(QWidget):
         super().__init__()
         self.node = MainController()
         self.ttp = TextToPath()
-        self.itp = ImageToPath()
+        self.gtp = GerberToPath()
         self.initUI()
 
     def initUI(self):
-        self.setWindowTitle('입력 모드 선택 UI')
+        self.setWindowTitle('모드 선택')
         self.setFixedSize(420, 400)
         
         main_layout = QVBoxLayout()
@@ -76,7 +94,7 @@ class MainUI(QWidget):
         # 텍스트 입력 창
         self.input_text = QTextEdit()
         self.input_text.setPlaceholderText("여기에 내용을 입력하세요...")
-        self.input_text.setFixedSize(380, 200) # 이미지 업로드 박스와 동일한 크기로 설정
+        self.input_text.setFixedSize(380, 200) # 파일 업로드 박스와 동일한 크기로 설정
         self.input_text.setStyleSheet("""
             QTextEdit {
                 border: 1px solid #ccc;
@@ -90,11 +108,11 @@ class MainUI(QWidget):
         text_layout.addWidget(self.input_text)
         self.page_text.setLayout(text_layout)
 
-        # --- 페이지 2: 이미지 업로드 ---
+        # --- 페이지 2: 파일 업로드 ---
         self.page_image = QWidget()
         image_layout = QVBoxLayout()
-        self.upload_box = ImageUploadBox()
-        self.upload_box.image_loaded.connect(self.update_button_state)
+        self.upload_box = FileUploadBox()
+        self.upload_box.file_selected.connect(self.update_button_state)
         image_layout.addWidget(self.upload_box)
         self.page_image.setLayout(image_layout)
 
@@ -106,7 +124,7 @@ class MainUI(QWidget):
         # 2. 상단 모드 선택 (토글 형태의 라디오 버튼)
         mode_layout = QHBoxLayout()
         self.btn_text_mode = QRadioButton("텍스트 입력")
-        self.btn_image_mode = QRadioButton("이미지 업로드")
+        self.btn_image_mode = QRadioButton("파일 업로드")
         self.btn_text_mode.setChecked(True) # 기본값: 텍스트
         
         # 버튼 스타일링 (선택 시 강조)
@@ -194,7 +212,7 @@ class MainUI(QWidget):
         if self.btn_text_mode.isChecked():
             self.stack.setCurrentIndex(0) # 텍스트 페이지
         else:
-            self.stack.setCurrentIndex(1) # 이미지 페이지
+            self.stack.setCurrentIndex(1) # 파일 페이지
         self.update_button_state()
     
     def run_process(self):
@@ -207,10 +225,10 @@ class MainUI(QWidget):
             else:
                 self.node.send_request(True, content)
         else:
-            # 이미지 모드일 때
+            # 파일 모드일 때
             file_path = self.upload_box.file_path
             if not file_path:
-                QMessageBox.warning(self, "경고", "이미지를 먼저 업로드해주세요!")
+                QMessageBox.warning(self, "경고", "파일를 먼저 업로드해주세요!")
             else:
                 self.node.send_request(False, file_path)
     
@@ -225,9 +243,9 @@ class MainUI(QWidget):
         else:
             file_path = self.upload_box.file_path
             if not file_path:
-                QMessageBox.warning(self, "경고", "이미지를 먼저 업로드해주세요!")
+                QMessageBox.warning(self, "경고", "파일를 먼저 업로드해주세요!")
             else:
-                self.itp.visualize_robot_path(self.itp.image_to_path(file_path))
+                visualize_gerber(filepath=file_path)
 
 class MainController(Node):
     def __init__(self):
