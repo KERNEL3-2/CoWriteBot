@@ -11,6 +11,7 @@ find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GetPenPosition.srv"
+  "srv/UserInput.srv"
 )
 
 # 런타임 의존성 내보내기
