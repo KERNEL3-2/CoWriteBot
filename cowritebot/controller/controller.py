@@ -6,9 +6,9 @@ from rclpy.node import Node
 import DR_init
 from std_srvs.srv import Trigger
 from ament_index_python.packages import get_package_share_directory
-from cowritebot_interfaces.srv import GetPenPosition
+from cowritebot_interfaces.srv import GetPenPosition, UserInput
 from .text_to_path import TextToPath
-import time
+from .image_to_path import ImageToPath
 import matplotlib.pyplot as plt
 
 package_path = get_package_share_directory('cowritebot')
@@ -43,14 +43,30 @@ class BaseController(Node):
         self.close_gripper_client = self.create_client(Trigger, f'/{ROBOT_ID}/gripper/close')
         self.req = Trigger.Request()
         self._client = self.create_client(GetPenPosition, 'get_pen_position')
+        self.create_service(UserInput, 'get_user_input', self.callback_get_user_input)
         while not self._client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('service not available, waiting again...')
         self.pen_req = GetPenPosition.Request()
         self.down_position_z = 0
+        self.is_processing = False
         self.ttp = TextToPath()
+        self.itp = ImageToPath()
 
         self.init_robot()
     
+    def callback_get_user_input(self, request, response):
+        result = True
+        try:
+            if request.is_text:
+                self.typeSentenceHangul(request.contents)
+            else:
+                self.typeSentenceHangul(request.contents)
+        except:
+            result = False
+        finally:
+            response.success = result
+        return response
+        
     def find_pen(self):
         # 비동기적으로 요청 전송 (결과를 기다리는 Future 객체 반환)
         future = self._client.call_async(self.pen_req)
@@ -215,7 +231,26 @@ class BaseController(Node):
         movel(posx(init_posx), vel=VELOCITY, acc=ACC)
         
         _strokes = self.ttp.text_to_path(sentence)
-        lp = len(_strokes)
+
+        strokes = []
+        for stroke in _strokes:
+            arr, *_ = self.strokeToPosxList(stroke)
+            strokes.append(arr)
+
+        for stroke in strokes:
+            self.movelBeforeWrite(stroke[0])
+            self.get_logger().info(f"pendown")
+            self.pendown()
+            movesx(self.setZ(stroke), vel=80, acc=30)
+            self.get_logger().info(f"penup")
+            self.penup()
+
+    def drawImage(self, image_path):
+        # 메인 루프
+        self.get_logger().info("그림 그릴 위치로 이동")
+        movel(posx(init_posx), vel=VELOCITY, acc=ACC)
+        
+        _strokes = self.itp.image_to_path(image_path)
 
         strokes = []
         for stroke in _strokes:
@@ -251,15 +286,9 @@ class BaseController(Node):
 
 def main(args=None):
     node = BaseController()
+    node.grisp_pen()
     try:
-        node.grisp_pen()
-        # while rclpy.ok():
-            # sentence = input('문자를 입력하세요.')
-            # node.typeSentenceHangul(sentence)
-            # node.visualize_robot_path(sentence)
-        while True:
-            node.find_pen()
-            time.sleep(1)
+        rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
