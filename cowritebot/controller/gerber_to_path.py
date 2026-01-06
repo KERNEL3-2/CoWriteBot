@@ -52,26 +52,29 @@ class GerberToPath:
             raise ImportError("gerbonara 라이브러리가 필요합니다. pip install gerbonara")
 
     def gerber_to_path(self, filepath: str,
-                        pad_threshold: float = 1.5,
-                        separate_pads: bool = False) -> List[List[Tuple[float, float]]]:
+                        separate_pads: bool = False,
+                        pad_size: float = 0.5) -> List[List[Tuple[float, float]]]:
         """
         Gerber 파일에서 트레이스 경로 추출
 
         Args:
             filepath: Gerber 파일 경로 (.gbr, .gtl, .gbl 등)
-            pad_threshold: 패드로 인식할 최대 선분 길이 (mm)
             separate_pads: True면 패드와 트레이스 분리 반환
+            pad_size: 패드를 십자로 그릴 때 크기 (mm)
 
         Returns:
             strokes: [[(x1, y1), (x2, y2), ...], ...] 형태의 경로 리스트
-            separate_pads=True인 경우: (traces, pads) 튜플 반환
+            separate_pads=True인 경우: (traces, pad_strokes) 튜플 반환
+
+        Note:
+            패드는 Flash 객체(D03 명령)만 인식합니다.
         """
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"파일을 찾을 수 없습니다: {filepath}")
 
         gerber = GerberFile.open(filepath)
-        traces = []  # 트레이스 (긴 선분)
-        pads = []    # 패드 (짧은 선분)
+        traces = []  # 트레이스 (Line, Arc)
+        pads = []    # 패드 (Flash 객체)
 
         for obj in gerber.objects:
             if isinstance(obj, Line):
@@ -80,14 +83,8 @@ class GerberToPath:
                 x2 = float(obj.x2) * self.scale + self.offset_x
                 y2 = float(obj.y2) * self.scale + self.offset_y
 
-                # 선분 길이로 패드/트레이스 구분
-                length = self._distance((x1, y1), (x2, y2))
-                if length < pad_threshold:
-                    # 패드: 중심점만 저장
-                    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-                    pads.append((cx, cy))
-                else:
-                    traces.append([(x1, y1), (x2, y2)])
+                # 모든 Line은 트레이스로 처리
+                traces.append([(x1, y1), (x2, y2)])
 
             elif isinstance(obj, Arc):
                 arc_points = self._arc_to_points(obj)
@@ -109,10 +106,14 @@ class GerberToPath:
         # 닫힌 도형 필터링 (IC 외곽선 등)
         open_traces = self._filter_closed_shapes(merged_traces)
 
+        # 패드를 십자 stroke로 변환
+        pad_strokes = self._points_to_cross_strokes(pads, pad_size)
+
         if separate_pads:
-            return open_traces, pads
+            return open_traces, pad_strokes
         else:
-            return open_traces
+            # 트레이스와 패드 stroke 합쳐서 반환
+            return open_traces + pad_strokes
 
     def _deduplicate_points(self, points: List[Tuple[float, float]],
                            tolerance: float = 0.5) -> List[Tuple[float, float]]:
@@ -130,6 +131,61 @@ class GerberToPath:
             if not is_dup:
                 unique.append(p)
         return unique
+
+    def _deduplicate_strokes(self, strokes: List[List[Tuple[float, float]]],
+                             tolerance: float = 0.1) -> List[List[Tuple[float, float]]]:
+        """중복 선분 제거 (같은 경로를 두 번 지나가지 않도록)"""
+        if not strokes:
+            return []
+
+        unique = []
+        for stroke in strokes:
+            is_dup = False
+            for u in unique:
+                if self._is_same_stroke(stroke, u, tolerance):
+                    is_dup = True
+                    break
+            if not is_dup:
+                unique.append(stroke)
+        return unique
+
+    def _is_same_stroke(self, s1: List[Tuple[float, float]],
+                        s2: List[Tuple[float, float]],
+                        tolerance: float = 0.1) -> bool:
+        """두 stroke가 같은지 확인 (방향 무관)"""
+        if len(s1) != len(s2):
+            return False
+
+        # 정방향 비교
+        same_forward = all(self._distance(p1, p2) < tolerance
+                          for p1, p2 in zip(s1, s2))
+        if same_forward:
+            return True
+
+        # 역방향 비교
+        same_backward = all(self._distance(p1, p2) < tolerance
+                           for p1, p2 in zip(s1, reversed(s2)))
+        return same_backward
+
+    def _points_to_cross_strokes(self, points: List[Tuple[float, float]],
+                                  size: float = 0.5) -> List[List[Tuple[float, float]]]:
+        """
+        점들을 십자(+) 모양 stroke로 변환
+
+        Args:
+            points: 점 좌표 리스트
+            size: 십자 크기 (반지름, mm)
+
+        Returns:
+            십자 stroke 리스트 (각 점당 2개의 stroke: 가로선, 세로선)
+        """
+        strokes = []
+        for x, y in points:
+            # 가로선
+            strokes.append([(x - size, y), (x + size, y)])
+            # 세로선
+            strokes.append([(x, y - size), (x, y + size)])
+        return strokes
 
     def excellon_to_points(self, filepath: str) -> List[Tuple[float, float]]:
         """
