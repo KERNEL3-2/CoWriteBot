@@ -1,5 +1,5 @@
 import sys
-import os, random
+import os
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QLabel, QFileDialog, QStackedWidget, 
                              QRadioButton, QMessageBox, QTextEdit, QProgressBar)
@@ -9,8 +9,14 @@ import rclpy
 from text_to_path import TextToPath
 from gerber_to_path import GerberToPath
 from rclpy.node import Node
-from cowritebot_interfaces.srv import UserInput
+from rclpy.action import ActionClient
+from cowritebot_interfaces.action import UserInput
 from visualize_gerber import visualize_gerber
+
+UNEXPECTED_ERROR = -1
+FAILED = 0
+SUCCEEDED = 1
+NEXT_STEP = 2
 
 # --- [로딩 오버레이 위젯] ---
 class LoadingOverlay(QWidget):
@@ -57,33 +63,69 @@ class LoadingOverlay(QWidget):
 
 # --- [ROS 요청을 처리할 워커 쓰레드] ---
 class ServiceWorker(Node, QThread):
-    finished_signal = pyqtSignal(object) # 결과를 메인으로 보내는 신호
+    finished_signal = pyqtSignal(int, str) # 결과를 메인으로 보내는 신호
 
-    def __init__(self):
+    def __init__(self, is_text, contents, skip_grasp, scale = 1.0):
         Node.__init__(self, 'request_user_input_node')
         QThread.__init__(self)
 
-        self.client = self.create_client(UserInput, 'get_user_input')
-        self.req = UserInput.Request()
+        self._action_client = ActionClient(self, UserInput, 'get_user_input')
+        self._progress = 0.0
+        self._request_info = {
+            'is_text': is_text,
+            'contents': contents,
+            'skip_grasp': skip_grasp,
+            'scale': scale
+        }
+    
+    def feedback_callback(self, feedback_msg):
+        feedback = feedback_msg.feedback
+        self._progress = feedback.progress
+        self.get_logger().info(f'Received feedback: {self._progress}')
 
     def run(self):
-        # 서비스 대기
-        if not self.client.wait_for_service(timeout_sec=2.0):
-            self.finished_signal.emit(random.choice([True, None])) # 실패 시 None 반환
+        goal_msg = UserInput.Goal()
+        goal_msg.is_text = self._request_info['is_text']
+        goal_msg.contents = self._request_info['contents']
+        goal_msg.skip_grasp = self._request_info['skip_grasp']
+        goal_msg.scale = self._request_info['scale']
+        
+        # 1. 서버 대기
+        if not self._action_client.wait_for_server(timeout_sec=2.0):
+            self.finished_signal.emit(UNEXPECTED_ERROR, "Action Server is not available")
             return
 
-        # 비동기 호출
-        future = self.client.call_async(self.req)
+        # 2. 목표 전송 (비동기)
+        send_goal_future = self._action_client.send_goal_async(
+            goal_msg, feedback_callback=self.feedback_callback
+        )
+
+        self.finished_signal.emit(NEXT_STEP, None)
+        # 3. 목표가 수락될 때까지 Spin (★ 핵심: 여기서 콜백 처리가 일어남)
+        while rclpy.ok() and not send_goal_future.done():
+            rclpy.spin_once(self, timeout_sec=0.1)
         
-        # ★ 중요: spin_until_future_complete는 여기서 돕니다 (메인 스레드 아님)
-        # 주의: self.node가 이미 다른 스레드에서 spin 중이라면 이 방식 대신 future.add_done_callback을 써야 합니다.
-        rclpy.spin_until_future_complete(self.node, future)
-        
-        try:
-            result = future.result()
-            self.finished_signal.emit(result)
-        except Exception as e:
-            self.finished_signal.emit(f"Error: {e}")
+        goal_handle = send_goal_future.result()
+
+        if not goal_handle.accepted:
+            self.get_logger().info('Goal rejected :(')
+            self.finished_signal.emit(UNEXPECTED_ERROR, 'Goal rejected :(')
+            return
+
+        self.get_logger().info('Goal accepted :)')
+
+        # 4. 결과 대기 (비동기)
+        get_result_future = goal_handle.get_result_async()
+
+        # 5. 결과가 나올 때까지 Spin (★ 핵심: 피드백 콜백도 이 루프 덕분에 실행됨)
+        while rclpy.ok() and not get_result_future.done():
+            rclpy.spin_once(self, timeout_sec=0.1)
+
+        # 6. 최종 결과 처리
+        result = get_result_future.result().result
+        self.get_logger().info(f'Action Finished. Success: {result.is_success}')
+
+        self.finished_signal.emit(SUCCEEDED if result.is_success else FAILED, f'Action Finished. Success: {result.is_success}')
 
 # --- [이전과 동일한 커스텀 파일 박스 클래스] ---
 class FileUploadBox(QLabel):
@@ -361,10 +403,10 @@ class MainUI(QWidget):
         self.update_button_state(False)
 
         # 3. 워커 쓰레드 시작 (ROS 요청)
-        self.worker = ServiceWorker()
+        self.worker = ServiceWorker(is_text, contents, True)
         
         # 쓰레드가 끝났을 때 실행될 함수 연결
-        self.worker.finished_signal.connect(self.on_process_finished)
+        self.worker.finished_signal.connect(self.on_processing)
         self.worker.start()
     
     def preview(self):
@@ -382,18 +424,22 @@ class MainUI(QWidget):
             else:
                 visualize_gerber(filepath=file_path)
     
-    def on_process_finished(self, result):
-        """워커 쓰레드가 작업을 마치면 호출됨"""
-        # 1. 로딩 화면 끄기 & 버튼 활성화
+    def on_processing(self, result_code, result_msg):
         self.loading_overlay.hide()
         self.update_button_state(True)
 
         # 2. 결과 처리
-        if result is None:
+        if result_code == UNEXPECTED_ERROR:
             QMessageBox.critical(self, "에러", "서비스 연결에 실패했습니다.")
             return
         
-        self.show_control_page()
+        elif result_code == FAILED:
+            QMessageBox.critical(self, "실패", result_msg)
+        elif result_code == SUCCEEDED:
+            QMessageBox.information(self, "성공", result_msg)
+            self.show_input_page()
+        else:
+            self.show_control_page()
     
     def destroy_node(self):
         self.worker.destroy_node()

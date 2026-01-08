@@ -1,13 +1,11 @@
-import sys, os
-import argparse
-from scipy.spatial.transform import Rotation
-import numpy as np
+import sys
 import rclpy
 from rclpy.node import Node
+from rclpy.action import ActionServer
 import DR_init
 from std_srvs.srv import Trigger
 from ament_index_python.packages import get_package_share_directory
-from cowritebot_interfaces.srv import GetPenPosition
+from cowritebot_interfaces.action import UserInput
 from .text_to_path import TextToPath
 import time
 import matplotlib.pyplot as plt
@@ -50,32 +48,57 @@ class BaseController(Node):
 
         self.open_gripper_client = self.create_client(Trigger, f'/{ROBOT_ID}/gripper/open')
         self.close_gripper_client = self.create_client(Trigger, f'/{ROBOT_ID}/gripper/close')
+
+        # ROS2 ACTION SERVER
+        self._action_server = ActionServer(self, UserInput, 'get_user_input', self.cb_get_user_input)
         self.req = Trigger.Request()
-        self._client = self.create_client(GetPenPosition, 'get_pen_position')
-        while not self._client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('service not available, waiting again...')
-        self.pen_req = GetPenPosition.Request()
         self.down_position_z = 0
         self.ttp = TextToPath()
 
         self.init_robot()
-    
-    def find_pen(self):
-        # 비동기적으로 요청 전송 (결과를 기다리는 Future 객체 반환)
-        future = self._client.call_async(self.pen_req)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0) # 결과가 올 때까지 대기
-        self.get_logger().info("펜 위치 요청.")
-        
-        if future.result() is not None:
-            response = future.result()
-            if response.success:
-                self.get_logger().info(f"성공: {response}")
+
+    def cb_get_user_input(self, goal_handle):
+        self.get_logger().info('Executing goal...')
+
+        # 1. 초기 상태 설정
+        feedback_msg = UserInput.Feedback()
+        feedback_msg.progress = 0.0
+
+        is_success = True
+        message = '성공적으로 작업을 수행하였습니다.'
+        try:
+            if not goal_handle.request.skip_grasp:
+                self.grisp_pen()
+            
+            if goal_handle.request.is_text:
+                for progress in self.typeSentenceHangul(goal_handle.request.contents):
+                    feedback_msg.progress = progress
+                    goal_handle.publish_feedback(feedback_msg)
             else:
-                self.get_logger().error(f"실패: {response}")
-        else:
-            # 서비스 호출 자체에 실패한 경우 (서버가 죽었거나 타임아웃 등)
-            self.get_logger().error("서비스 호출 실패")
-    
+                gerber = goal_handle.request.contents
+                scale = goal_handle.request.scale
+
+                self.get_logger().info(f"Gerber 파일 그리기: {gerber}")
+
+                for progress in self.drawGerberPath(gerber, scale):
+                    self.get_logger().info(f'Feedback: {progress}')
+
+                    feedback_msg.progress = progress
+                    goal_handle.publish_feedback(feedback_msg)
+                
+            goal_handle.succeed()
+        except Exception as e:
+            is_success = False
+            message = f'작업 도중 문제가 발생하였습니다. ({e})'
+            goal_handle.abort()
+        finally:
+            result = UserInput.Result()
+            result.is_success = is_success
+            result.message = message
+            release_force()
+            release_compliance_ctrl()
+        return result
+
     def init_robot(self):
         # 준비 자세
         JReady = [0, 0, 90, 0, 90, -90]
@@ -224,20 +247,21 @@ class BaseController(Node):
         movel(posx(init_posx), vel=VELOCITY, acc=ACC)
         
         _strokes = self.ttp.text_to_path(sentence)
-        lp = len(_strokes)
 
         strokes = []
         for stroke in _strokes:
             arr, *_ = self.strokeToPosxList(stroke)
             strokes.append(arr)
-
-        for stroke in strokes:
+        
+        num_of_strokes = len(strokes)
+        for i, stroke in enumerate(strokes):
             self.movelBeforeWrite(stroke[0])
             self.get_logger().info(f"pendown")
             self.pendown()
             movesx(self.setZ(stroke), vel=80, acc=30)
             self.get_logger().info(f"penup")
             self.penup()
+            yield round((i + 1) / num_of_strokes, 2)
     
     def visualize_robot_path(self, sentence):
         strokes = self.ttp.text_to_path(sentence)
@@ -291,6 +315,7 @@ class BaseController(Node):
         self.get_logger().info("작업 위치로 이동")
         movel(posx(init_posx), vel=VELOCITY, acc=ACC)
 
+        num_of_strokes = len(strokes)
         # 각 stroke 그리기
         for i, stroke in enumerate(strokes):
             if len(stroke) < 2:
@@ -309,6 +334,7 @@ class BaseController(Node):
             self.pendown()
             movesx(self.setZ(robot_stroke), vel=80, acc=30)
             self.penup()
+            yield round((i + 1) / num_of_strokes, 3)
 
         self.get_logger().info("Gerber 경로 그리기 완료!")
 
@@ -390,75 +416,14 @@ class BaseController(Node):
             plt.show()
 
 def main(args=None):
-    # 명령줄 인자 파싱
-    parser = argparse.ArgumentParser(description='CoWriteBot Controller')
-    parser.add_argument('--sentence', '-s', type=str, default=None,
-                       help='쓸 문장 (한글 또는 영어)')
-    parser.add_argument('--gerber', '-g', type=str, default=None,
-                       help='Gerber 파일 경로 (.gbr, .gtl 등)')
-    parser.add_argument('--drill', '-d', type=str, default=None,
-                       help='Excellon 드릴 파일 경로 (.drl, .xln 등)')
-    parser.add_argument('--scale', type=float, default=1.0,
-                       help='Gerber/드릴 스케일 팩터 (기본: 1.0)')
-    parser.add_argument('--skip-grasp', action='store_true',
-                       help='펜 잡기 스킵 (이미 잡은 상태)')
-    parser.add_argument('--visualize', '-v', action='store_true',
-                       help='경로 시각화만 하고 종료')
-    parser.add_argument('--sample-pcb', action='store_true',
-                       help='샘플 PCB 패턴 그리기 (테스트용)')
-
-    # ROS2 args와 분리
-    parsed_args, remaining = parser.parse_known_args()
-
     node = BaseController()
     try:
-        # 시각화 모드
-        if parsed_args.visualize:
-            if parsed_args.sentence:
-                node.visualize_robot_path(parsed_args.sentence)
-            elif parsed_args.gerber:
-                node.visualize_gerber_path(parsed_args.gerber, parsed_args.scale)
-            elif parsed_args.sample_pcb:
-                node.visualize_gerber_path(None, parsed_args.scale)  # 샘플 데이터
-            return
-
-        # 펜 잡기 (skip-grasp 옵션이 없으면)
-        if not parsed_args.skip_grasp:
-            node.grisp_pen()
-
-        # Gerber 모드
-        if parsed_args.gerber:
-            node.get_logger().info(f"Gerber 파일 그리기: {parsed_args.gerber}")
-            node.drawGerberPath(parsed_args.gerber, parsed_args.scale)
-        # 드릴 모드
-        elif parsed_args.drill:
-            node.get_logger().info(f"드릴 포인트 그리기: {parsed_args.drill}")
-            node.drawDrillPoints(parsed_args.drill, parsed_args.scale)
-        # 샘플 PCB 모드
-        elif parsed_args.sample_pcb:
-            node.get_logger().info("샘플 PCB 패턴 그리기")
-            node.drawGerberPath(None, parsed_args.scale)  # gerbonara 없으면 샘플 데이터 사용
-        # 문장 모드
-        elif parsed_args.sentence:
-            node.get_logger().info(f"'{parsed_args.sentence}' 쓰기 시작")
-            node.typeSentenceHangul(parsed_args.sentence)
-            node.get_logger().info("쓰기 완료!")
-        else:
-            # 문장이 없으면 인터랙티브 모드
-            while rclpy.ok():
-                sentence = input('문자를 입력하세요 (종료: q): ')
-                if sentence.lower() == 'q':
-                    break
-                if sentence.strip():
-                    node.typeSentenceHangul(sentence)
-    except KeyboardInterrupt:
+        rclpy.spin(node)
+    except Exception:
         pass
     finally:
-        release_force()
-        release_compliance_ctrl()
         node.destroy_node()
         rclpy.shutdown()
-
 
 def main_launcher(sentence: str, skip_grasp: bool = False):
     """런처에서 호출용 함수
