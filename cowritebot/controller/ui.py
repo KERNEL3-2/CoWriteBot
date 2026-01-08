@@ -14,9 +14,10 @@ os.environ['QT_IM_MODULE'] = 'ibus'
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QTextEdit, QPushButton, QLabel, QFileDialog,
                              QStackedWidget, QRadioButton, QMessageBox, QTabWidget,
-                             QGroupBox, QLineEdit, QSizePolicy)
-from PyQt6.QtGui import QPixmap, QDragEnterEvent, QDropEvent, QPalette, QColor
-from PyQt6.QtCore import Qt, pyqtSignal, QThread, QProcess
+                             QGroupBox, QLineEdit, QSizePolicy, QDialog, QDialogButtonBox, 
+                             QCheckBox, QDoubleSpinBox)
+from PyQt6.QtGui import QPixmap, QDragEnterEvent, QDropEvent
+from PyQt6.QtCore import Qt, pyqtSignal, QThread
 import rclpy
 from text_to_path import TextToPath
 from gerber_to_path import GerberToPath
@@ -240,6 +241,39 @@ class RobotProcessWorker(QThread):
         except Exception as e:
             self.finished.emit(False, str(e))
 
+class FloatCheckboxDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("실행 전 설정")
+
+        # 레이아웃 설정
+        layout = QVBoxLayout()
+
+        # 1. Float 입력을 위한 DoubleSpinBox
+        self.label_float = QLabel("스케일 값")
+        self.float_input = QDoubleSpinBox()
+        self.float_input.setRange(1.0, 3.0) # 범위 설정
+        self.float_input.setDecimals(1)                # 소수점 자리수
+        self.float_input.setValue(1.0)                 # 초기값
+        
+        layout.addWidget(self.label_float)
+        layout.addWidget(self.float_input)
+
+        # 2. 체크박스
+        self.check_input = QCheckBox("펜잡기 동작 실행")
+        layout.addWidget(self.check_input)
+
+        # 3. 확인 / 취소 버튼
+        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.buttons.accepted.connect(self.accept) # Ok 누르면 종료 코드 전달
+        self.buttons.rejected.connect(self.reject) # Cancel 누르면 종료 코드 전달
+        layout.addWidget(self.buttons)
+
+        self.setLayout(layout)
+
+    def get_values(self):
+        """입력된 값을 튜플로 반환합니다."""
+        return self.float_input.value(), self.check_input.isChecked()
 
 # --- [메인 애플리케이션 클래스] ---
 class MainUI(QWidget):
@@ -1117,8 +1151,17 @@ class MainUI(QWidget):
             if not content:
                 QMessageBox.warning(self, "경고", "텍스트를 입력해주세요!")
                 return
+            
+            dialog = FloatCheckboxDialog(self)
+            if dialog.exec(): # 사용자가 OK를 눌렀을 때만 실행
+                scale, skip_grasp = dialog.get_values()
+            else:
+                QMessageBox.warning(self, "경고", "동작을 취소하였습니다!")
+                return
+            
+            skip_grasp_arg = '' if skip_grasp else '--skip-grasp'
             # controller 명령어 생성
-            cmd = f'source /opt/ros/humble/setup.bash && source ~/doosan_ws/install/setup.bash && ros2 run cowritebot controller --sentence "{content}" --skip-grasp'
+            cmd = f'source /opt/ros/humble/setup.bash && source ~/doosan_ws/install/setup.bash && ros2 run cowritebot controller --sentence "{content}" {skip_grasp_arg} --scale "{scale}"'
             self.robot_log.append(f"[INFO] 텍스트 쓰기 시작: '{content}'")
         else:
             # 파일 모드 (Gerber)
