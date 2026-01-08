@@ -45,16 +45,23 @@ LIMIT_OF_CH_IN_SENTENCE = 5
 NUM_OF_GRID_DOT = 5
 
 class BaseController(Node):
-    def __init__(self):
+    def __init__(self, skip_grasp=False):
         super().__init__('base_controller_node')
 
         self.open_gripper_client = self.create_client(Trigger, f'/{ROBOT_ID}/gripper/open')
         self.close_gripper_client = self.create_client(Trigger, f'/{ROBOT_ID}/gripper/close')
         self.req = Trigger.Request()
-        self._client = self.create_client(GetPenPosition, 'get_pen_position')
-        while not self._client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('service not available, waiting again...')
-        self.pen_req = GetPenPosition.Request()
+
+        # 펜 잡기를 스킵하지 않을 때만 get_pen_position 서비스 대기
+        if not skip_grasp:
+            self._client = self.create_client(GetPenPosition, 'get_pen_position')
+            while not self._client.wait_for_service(timeout_sec=1.0):
+                self.get_logger().info('service not available, waiting again...')
+            self.pen_req = GetPenPosition.Request()
+        else:
+            self._client = None
+            self.pen_req = None
+
         self.down_position_z = 0
         self.ttp = TextToPath()
 
@@ -176,6 +183,18 @@ class BaseController(Node):
             tmp[2] = self.down_position_z
             result.append(posx(tmp))
         return result
+
+    def movesx_chunked(self, stroke, vel=80, acc=30, chunk_size=120):
+        """movesx를 chunk 단위로 나눠서 실행 (최대 127개 제한 회피)"""
+        stroke_with_z = self.setZ(stroke)
+        self._movesx_list_chunked(stroke_with_z, vel, acc, chunk_size)
+
+    def _movesx_list_chunked(self, posx_list, vel=80, acc=30, chunk_size=120):
+        """이미 준비된 posx 리스트를 chunk 단위로 실행"""
+        for i in range(0, len(posx_list), chunk_size):
+            chunk = posx_list[i:i + chunk_size]
+            if len(chunk) >= 2:  # movesx는 최소 2개 포인트 필요
+                movesx(chunk, vel=vel, acc=acc)
     
     def typeSentence(self, sentence):
         # 메인 루프
@@ -196,7 +215,7 @@ class BaseController(Node):
             for j, arr in enumerate(posx_arrays):
                 self.get_logger().info(f"pendown")
                 self.pendown()  # 힘제어 시작 및 유지
-                movesx(self.setZ(arr), vel=80, acc=30)
+                self._movesx_list_chunked(self.setZ(arr), vel=80, acc=30)  # 127개 제한 회피
                 self.get_logger().info(f"penup")
                 self.penup()  # 힘제어만 해제, 순응제어는 유지
 
@@ -235,7 +254,7 @@ class BaseController(Node):
             self.movelBeforeWrite(stroke[0])
             self.get_logger().info(f"pendown")
             self.pendown()
-            movesx(self.setZ(stroke), vel=80, acc=30)
+            self.movesx_chunked(stroke, vel=80, acc=30)  # 127개 제한 회피
             self.get_logger().info(f"penup")
             self.penup()
     
@@ -307,7 +326,7 @@ class BaseController(Node):
             self.get_logger().info(f"Stroke {i+1}/{len(strokes)} 그리기 ({len(stroke)} points)")
             self.movelBeforeWrite(robot_stroke[0])
             self.pendown()
-            movesx(self.setZ(robot_stroke), vel=80, acc=30)
+            self._movesx_list_chunked(self.setZ(robot_stroke), vel=80, acc=30)  # 127개 제한 회피
             self.penup()
 
         self.get_logger().info("Gerber 경로 그리기 완료!")
@@ -389,6 +408,67 @@ class BaseController(Node):
             plt.grid(True, alpha=0.3)
             plt.show()
 
+    def execute_voice_command(self, command: str, params: dict) -> tuple:
+        """
+        음성/채팅 명령 실행
+
+        Args:
+            command: 명령 타입 (예: "WRITE_TEXT", "START_SOLDERING")
+            params: 명령 파라미터
+
+        Returns:
+            (success: bool, message: str)
+        """
+        try:
+            if command == "WRITE_TEXT":
+                text = params.get("text", "")
+                if text:
+                    self.get_logger().info(f"음성 명령: '{text}' 쓰기")
+                    self.typeSentenceHangul(text)
+                    return True, f"'{text}' 쓰기를 완료했습니다."
+                return False, "쓸 텍스트가 없습니다."
+
+            elif command == "START_SOLDERING":
+                gerber_path = params.get("file_path")
+                scale = params.get("scale", 1.0)
+                if gerber_path:
+                    self.get_logger().info(f"음성 명령: 납땜 시작 ({gerber_path})")
+                    self.drawGerberPath(gerber_path, scale)
+                    return True, "납땜을 완료했습니다."
+                return False, "Gerber 파일이 필요합니다."
+
+            elif command == "GO_HOME":
+                self.get_logger().info("음성 명령: 홈 위치로 이동")
+                self.init_robot()
+                return True, "홈 위치로 이동했습니다."
+
+            elif command == "STOP":
+                self.get_logger().info("음성 명령: 정지")
+                release_force()
+                release_compliance_ctrl()
+                return True, "동작을 중지했습니다."
+
+            elif command == "GRIP_PEN":
+                self.get_logger().info("음성 명령: 펜 잡기")
+                self.grisp_pen()
+                return True, "펜을 잡았습니다."
+
+            elif command == "RELEASE_PEN":
+                self.get_logger().info("음성 명령: 펜 놓기")
+                self.open_gripper()
+                return True, "펜을 놓았습니다."
+
+            elif command == "GET_STATUS":
+                status = "현재 대기 중입니다."
+                return True, status
+
+            else:
+                return False, f"알 수 없는 명령입니다: {command}"
+
+        except Exception as e:
+            self.get_logger().error(f"명령 실행 오류: {e}")
+            return False, f"오류 발생: {str(e)}"
+
 def main(args=None):
     # 명령줄 인자 파싱
     parser = argparse.ArgumentParser(description='CoWriteBot Controller')
@@ -410,7 +490,9 @@ def main(args=None):
     # ROS2 args와 분리
     parsed_args, remaining = parser.parse_known_args()
 
-    node = BaseController()
+    # skip_grasp 또는 visualize 모드면 펜 위치 서비스 대기 스킵
+    skip_pen_service = parsed_args.skip_grasp or parsed_args.visualize
+    node = BaseController(skip_grasp=skip_pen_service)
     try:
         # 시각화 모드
         if parsed_args.visualize:
@@ -470,7 +552,7 @@ def main_launcher(sentence: str, skip_grasp: bool = False):
     Returns:
         bool: 성공 여부
     """
-    node = BaseController()
+    node = BaseController(skip_grasp=skip_grasp)
     try:
         if not skip_grasp:
             node.grisp_pen()
