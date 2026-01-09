@@ -64,13 +64,13 @@ class LoadingOverlay(QWidget):
 # --- [ROS 요청을 처리할 워커 쓰레드] ---
 class ServiceWorker(Node, QThread):
     finished_signal = pyqtSignal(int, str) # 결과를 메인으로 보내는 신호
+    progress_signal = pyqtSignal(float)
 
     def __init__(self, is_text, contents, skip_grasp, scale = 1.0):
         Node.__init__(self, 'request_user_input_node')
         QThread.__init__(self)
 
         self._action_client = ActionClient(self, UserInput, 'get_user_input')
-        self._progress = 0.0
         self._request_info = {
             'is_text': is_text,
             'contents': contents,
@@ -80,8 +80,8 @@ class ServiceWorker(Node, QThread):
     
     def feedback_callback(self, feedback_msg):
         feedback = feedback_msg.feedback
-        self._progress = feedback.progress
-        self.get_logger().info(f'Received feedback: {self._progress}')
+        progress = round(feedback.progress, 3)
+        self.progress_signal.emit(progress)
 
     def run(self):
         goal_msg = UserInput.Goal()
@@ -202,6 +202,11 @@ class ControlPage(QWidget):
         self.lbl_status.setStyleSheet("font-size: 18px; font-weight: bold; margin-bottom: 20px;")
         layout.addWidget(self.lbl_status)
 
+        self.lbl_progress = QLabel(f'진행률 : 0%')
+        self.lbl_progress.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_progress.setStyleSheet("font-size: 18px; font-weight: bold; margin-bottom: 20px;")
+        layout.addWidget(self.lbl_progress)
+
         # 버튼 3개 생성
         self.btn1 = QPushButton("일시정지")
         self.btn2 = QPushButton("중지 (초기화면)")
@@ -234,6 +239,9 @@ class ControlPage(QWidget):
     def go_back(self):
         # 초기 화면으로 돌아가기 위해 시그널 발생
         self.go_back_signal.emit()
+    
+    def set_progress(self, proc):
+        self.lbl_progress.setText(f'진행률 : {proc}%')
 
 # --- [메인 애플리케이션 클래스] ---
 class MainUI(QWidget):
@@ -403,10 +411,12 @@ class MainUI(QWidget):
         self.update_button_state(False)
 
         # 3. 워커 쓰레드 시작 (ROS 요청)
-        self.worker = ServiceWorker(is_text, contents, True)
+        self.worker = ServiceWorker(is_text, contents, False, 3.0)
         
         # 쓰레드가 끝났을 때 실행될 함수 연결
         self.worker.finished_signal.connect(self.on_processing)
+        self.worker.progress_signal.connect(self.set_progress)
+        self.set_progress(0)
         self.worker.start()
     
     def preview(self):
@@ -440,6 +450,9 @@ class MainUI(QWidget):
             self.show_input_page()
         else:
             self.show_control_page()
+    
+    def set_progress(self, progress):
+        self.control_page_widget.set_progress(progress * 100)
     
     def destroy_node(self):
         self.worker.destroy_node()
