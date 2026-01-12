@@ -2,7 +2,8 @@ import sys
 import os
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QLabel, QFileDialog, QStackedWidget, 
-                             QRadioButton, QMessageBox, QTextEdit, QProgressBar)
+                             QRadioButton, QMessageBox, QTextEdit, QProgressBar,
+                             QCheckBox, QDoubleSpinBox)
 from PyQt6.QtGui import QPixmap, QDragEnterEvent, QDropEvent, QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 import rclpy
@@ -17,6 +18,30 @@ UNEXPECTED_ERROR = -1
 FAILED = 0
 SUCCEEDED = 1
 NEXT_STEP = 2
+
+# 모듈 경로 설정
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+
+# 채팅 위젯 임포트
+try:
+    from chat_widget import ChatWidget
+    CHAT_AVAILABLE = True
+except ImportError as e:
+    CHAT_AVAILABLE = False
+    print(f"[Warning] chat_widget 모듈을 찾을 수 없습니다: {e}")
+
+# voice_processing 임포트
+try:
+    from voice_processing.command_parser import RobotCommand, ParsedCommand
+    VOICE_AVAILABLE = True
+except ImportError as e:
+    VOICE_AVAILABLE = False
+    print(f"[Warning] voice_processing 모듈을 찾을 수 없습니다: {e}")
 
 # --- [로딩 오버레이 위젯] ---
 class LoadingOverlay(QWidget):
@@ -66,13 +91,13 @@ class ServiceWorker(Node, QThread):
     finished_signal = pyqtSignal(int, str) # 결과를 메인으로 보내는 신호
     progress_signal = pyqtSignal(float)
 
-    def __init__(self, is_text, contents, skip_grasp, scale = 1.0):
+    def __init__(self, command, contents, skip_grasp, scale = 1.0):
         Node.__init__(self, 'request_user_input_node')
         QThread.__init__(self)
 
         self._action_client = ActionClient(self, UserInput, 'get_user_input')
         self._request_info = {
-            'is_text': is_text,
+            'command': command,
             'contents': contents,
             'skip_grasp': skip_grasp,
             'scale': scale
@@ -85,7 +110,7 @@ class ServiceWorker(Node, QThread):
 
     def run(self):
         goal_msg = UserInput.Goal()
-        goal_msg.is_text = self._request_info['is_text']
+        goal_msg.command = self._request_info['command']
         goal_msg.contents = self._request_info['contents']
         goal_msg.skip_grasp = self._request_info['skip_grasp']
         goal_msg.scale = self._request_info['scale']
@@ -127,29 +152,48 @@ class ServiceWorker(Node, QThread):
 
         self.finished_signal.emit(SUCCEEDED if result.is_success else FAILED, f'Action Finished. Success: {result.is_success}')
 
-# --- [이전과 동일한 커스텀 파일 박스 클래스] ---
 class FileUploadBox(QLabel):
-
-    file_selected = pyqtSignal(bool) # 클래스 변수 : 모든 객체가 값을 공유
+    file_selected = pyqtSignal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.file_path = None # 멤버 변수 : 객체별로 값이 다 다름
+        self.file_path = None
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setText("\n이곳을 클릭하거나\n.gbr 파일을 드래그하여 업로드하세요.\n")
         self.set_default_style()
-        self.setFixedHeight(200)
+        self.setFixedHeight(380)
         self.setAcceptDrops(True)
         self.setWordWrap(True)
+
+        # --- 삭제 버튼 추가 ---
+        self.delete_btn = QPushButton("✕", self)
+        self.delete_btn.setFixedSize(30, 30)
+        self.delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.delete_btn.setStyleSheet("""
+            QPushButton {
+                color: #ff5555;
+                border-radius: 15px;
+                font-weight: bold;
+                border: none;
+            }
+        """)
+        self.delete_btn.hide()
+        self.delete_btn.clicked.connect(self.clear_file)
+
+    def resizeEvent(self, event):
+        """라벨 크기가 바뀔 때 버튼 위치를 우측 상단으로 고정"""
+        super().resizeEvent(event)
+        self.delete_btn.move(self.width() - 40, 10)
 
     def set_default_style(self):
         self.setStyleSheet("border: 2px dashed #aaa; background-color: #f0f0f0; border-radius: 10px; color: #555;")
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            fname, _ = QFileDialog.getOpenFileName(self, '.gbr 파일 선택', './cowritebot/samples', 'Gerber Files (*.gbr)')
-            if fname: self.handle_file(fname)
-
+            # 파일이 없을 때만 클릭으로 파일 다이얼로그 열기 (삭제 버튼과 겹침 방지)
+            if not self.file_path:
+                fname, _ = QFileDialog.getOpenFileName(self, '.gbr 파일 선택', './cowritebot/samples', 'Gerber Files (*.gbr)')
+                if fname: self.handle_file(fname)
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             event.accept()
@@ -163,12 +207,10 @@ class FileUploadBox(QLabel):
             self.handle_file(files[0])
 
     def handle_file(self, file_path):
-        """파일 종류에 따라 화면 표시를 다르게 처리"""
         self.file_path = file_path
         ext = os.path.splitext(file_path)[1].lower()
         file_name = os.path.basename(file_path)
 
-        # 파일 파일인 경우 미리보기
         if ext in ['.png', '.jpg', '.jpeg', '.bmp', '.gif']:
             pixmap = QPixmap(file_path)
             scaled = pixmap.scaled(self.width()-20, self.height()-20, 
@@ -177,12 +219,21 @@ class FileUploadBox(QLabel):
             self.setPixmap(scaled)
             self.setStyleSheet("border: 1px solid #ccc; background-color: white; border-radius: 10px;")
         else:
-            # 일반 파일인 경우 아이콘 모양과 파일명 표시
-            self.setPixmap(QPixmap()) # 기존 파일 제거
+            self.setPixmap(QPixmap()) 
             self.setText(f"📄\n\n파일이 선택되었습니다:\n{file_name}")
             self.setStyleSheet("border: 1px solid #3daee9; background-color: #ffffff; border-radius: 10px; color: #333; font-weight: bold;")
         
+        self.delete_btn.show() # 파일이 들어오면 삭제 버튼 표시
         self.file_selected.emit(True)
+
+    def clear_file(self):
+        """파일 정보를 초기화하고 UI를 원래대로 돌림"""
+        self.file_path = None
+        self.setPixmap(QPixmap())
+        self.setText("\n이곳을 클릭하거나\n.gbr 파일을 드래그하여 업로드하세요.\n")
+        self.set_default_style()
+        self.delete_btn.hide() # 버튼 다시 숨김
+        self.file_selected.emit(False) # 파일이 없어졌음을 알림
 
 # --- [새로 추가된 제어 화면 클래스] ---
 class ControlPage(QWidget):
@@ -253,7 +304,7 @@ class MainUI(QWidget):
 
     def initUI(self):
         self.setWindowTitle('CowriteBot Controller')
-        self.setFixedSize(420, 420) # 높이를 조금 늘림
+        self.setFixedSize(420, 620) # 높이를 조금 늘림
 
         # ★ 1. 전체 레이아웃 (Root Stack 사용)
         self.main_layout = QVBoxLayout(self)
@@ -268,6 +319,7 @@ class MainUI(QWidget):
         mode_layout = QHBoxLayout()
         self.btn_text_mode = QRadioButton("텍스트 입력")
         self.btn_image_mode = QRadioButton("파일 업로드")
+        self.btn_chat_mode = QRadioButton("채팅")
         self.btn_text_mode.setChecked(True)
         
         mode_style = "QRadioButton::indicator { width: 0px; height: 0px; } " \
@@ -275,8 +327,10 @@ class MainUI(QWidget):
                      "QRadioButton:checked { background: #3daee9; color: white; border: 1px solid #3daee9; font-weight: bold; }"
         self.btn_text_mode.setStyleSheet(mode_style)
         self.btn_image_mode.setStyleSheet(mode_style)
+        self.btn_chat_mode.setStyleSheet(mode_style)
         mode_layout.addWidget(self.btn_text_mode)
         mode_layout.addWidget(self.btn_image_mode)
+        mode_layout.addWidget(self.btn_chat_mode)
         input_page_layout.addLayout(mode_layout)
 
         # (1-2) 입력 스택 (텍스트/파일)
@@ -287,7 +341,7 @@ class MainUI(QWidget):
         text_layout = QVBoxLayout()
         self.input_text = QTextEdit()
         self.input_text.setPlaceholderText("여기에 내용을 입력하세요...")
-        self.input_text.setFixedHeight(200)     # <-- 변경된 코드
+        self.input_text.setFixedHeight(380)     # <-- 변경된 코드
         self.input_text.setStyleSheet("""
             QTextEdit {
                 border: 1px solid #ccc;
@@ -309,11 +363,45 @@ class MainUI(QWidget):
         image_layout.addWidget(self.upload_box)
         page_image.setLayout(image_layout)
 
+        # 채팅 페이지
+        if CHAT_AVAILABLE:
+            self.chat_widget = ChatWidget()
+            self.chat_widget.command_received.connect(self.execute_command)
+        else:
+            self.chat_widget = QLabel("음성/채팅 기능을 사용할 수 없습니다.\n필요한 모듈을 설치해주세요.")
+            self.chat_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
         self.input_stack.addWidget(page_text)
         self.input_stack.addWidget(page_image)
+        self.input_stack.addWidget(self.chat_widget)
         input_page_layout.addWidget(self.input_stack)
 
-        # (1-3) 하단 버튼 (미리보기, 실행)
+        # 펜 잡기 유무, scale 설정
+        option_layout = QHBoxLayout()
+        option_layout.setContentsMargins(15, 0, 15, 0)
+
+        float_layout = QHBoxLayout()
+        self.label_float = QLabel("scale: ")
+        self.scale_spin_box = QDoubleSpinBox()
+
+        # 설정: 최소/최대값, 소수점 자리수, 증감 간격
+        self.scale_spin_box.setRange(1.0, 3.0)
+        self.scale_spin_box.setDecimals(1)  # 소수점 첫째 자리까지
+        self.scale_spin_box.setSingleStep(0.1) # 화살표 클릭 시 0.1씩 변경
+        
+        float_layout.addWidget(self.label_float)
+        float_layout.addWidget(self.scale_spin_box)
+
+        # --- 체크박스 섹션 ---
+        self.skip_grasp_check = QCheckBox("펜 잡기 실행")
+        option_layout.addLayout(float_layout)
+
+        # 공백(반드시 중간에 위치)
+        option_layout.addStretch(1)
+
+        option_layout.addWidget(self.skip_grasp_check)
+
+        # 하단 버튼 (미리보기, 실행)
         self.btn_preview = QPushButton("미리보기")
         self.btn_execute = QPushButton("실 행")
         
@@ -334,6 +422,7 @@ class MainUI(QWidget):
         self.btn_preview.clicked.connect(self.preview)
         self.btn_execute.clicked.connect(self.run_process)
 
+        input_page_layout.addLayout(option_layout)
         input_page_layout.addWidget(self.btn_preview)
         input_page_layout.addWidget(self.btn_execute)
         
@@ -355,6 +444,7 @@ class MainUI(QWidget):
         self.update_button_state(False)
         self.btn_text_mode.toggled.connect(self.switch_input_mode)
         self.btn_image_mode.toggled.connect(self.switch_input_mode)
+        self.btn_chat_mode.toggled.connect(self.switch_input_mode)
 
         # ★ 4. 로딩 오버레이 생성 (마지막에 생성해야 맨 위에 뜸)
         self.loading_overlay = LoadingOverlay(self)
@@ -383,8 +473,12 @@ class MainUI(QWidget):
     def switch_input_mode(self):
         if self.btn_text_mode.isChecked():
             self.input_stack.setCurrentIndex(0) # 텍스트 페이지
-        else:
+            self.upload_box.clear_file()
+        elif self.btn_image_mode.isChecked():
             self.input_stack.setCurrentIndex(1) # 파일 페이지
+            self.input_text.clear()
+        else:
+            self.input_stack.setCurrentIndex(2)
         self.update_button_state()
 
     def show_control_page(self):
@@ -395,12 +489,28 @@ class MainUI(QWidget):
         """입력 화면(초기 화면)으로 복귀"""
         self.root_stack.setCurrentIndex(0)
     
-    def run_process(self):
+    def run_process(self, command: RobotCommand = None, params: dict = None):
         """[실행] 버튼 클릭 시 동작 로직"""
-        
-        # 1. 데이터 준비
-        is_text = self.btn_text_mode.isChecked()
-        contents = self.input_text.toPlainText() if is_text else self.upload_box.file_path
+        # 1. 입력 데이터
+        if command is None:
+            if self.btn_text_mode.isChecked():
+                command = RobotCommand.WRITE_TEXT
+                contents = self.input_text.toPlainText()
+            else:
+                command = RobotCommand.START_SOLDERING
+                contents = self.upload_box.file_path
+        else:
+            contents = None
+            if params is not None:
+                if params.get('text') is not None:
+                    contents = params.get('text')
+                elif params.get('file_path') is not None:
+                    contents = params.get('file_path')
+            
+            if contents is None or contents == '':
+                contents = self.input_text.toPlainText()
+                if not contents:
+                    contents = self.upload_box.file_path
 
         if not contents:
             QMessageBox.warning(self, "경고", "내용을 입력해주세요.")
@@ -410,8 +520,11 @@ class MainUI(QWidget):
         self.loading_overlay.show()
         self.update_button_state(False)
 
+        skip_grasp = self.skip_grasp_check.isChecked()
+        scale = self.scale_spin_box.value()
+
         # 3. 워커 쓰레드 시작 (ROS 요청)
-        self.worker = ServiceWorker(is_text, contents, False, 3.0)
+        self.worker = ServiceWorker(command, contents, skip_grasp, scale)
         
         # 쓰레드가 끝났을 때 실행될 함수 연결
         self.worker.finished_signal.connect(self.on_processing)
@@ -456,6 +569,26 @@ class MainUI(QWidget):
     
     def destroy_node(self):
         self.worker.destroy_node()
+    
+    def execute_command(self, command: ParsedCommand):
+        """
+            음성/채팅 명령 실행
+            command: RobotCommand
+            parameters: Dict[str, Any] = field(default_factory=dict)
+            original_text: str = ""
+            response_text: str = ""
+        """
+        cmd_type = command.command
+        params = command.parameters
+        if cmd_type in [
+            RobotCommand.WRITE_TEXT, 
+            RobotCommand.START_SOLDERING,
+            RobotCommand.GO_HOME,
+            RobotCommand.GRIP_PEN,
+            RobotCommand.RELEASE_PEN,
+            RobotCommand.RUN_SEQUENCE,
+        ]:
+            self.run_process(cmd_type, params)
 
 def main(args=None):
     rclpy.init()

@@ -1,4 +1,4 @@
-bool is_text
+int32 command
 string contents
 float32 scale
 bool skip_grasp

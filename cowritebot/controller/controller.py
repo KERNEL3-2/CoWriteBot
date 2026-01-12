@@ -6,6 +6,7 @@ import DR_init
 from std_srvs.srv import Trigger
 from ament_index_python.packages import get_package_share_directory
 from cowritebot_interfaces.action import UserInput
+from voice_processing import RobotCommand
 from .text_to_path import TextToPath
 import time
 import matplotlib.pyplot as plt
@@ -67,24 +68,43 @@ class BaseController(Node):
         is_success = True
         message = '성공적으로 작업을 수행하였습니다.'
         try:
-            if not goal_handle.request.skip_grasp:
-                self.grisp_pen()
-            
-            if goal_handle.request.is_text:
-                for progress in self.typeSentenceHangul(goal_handle.request.contents):
-                    feedback_msg.progress = progress
-                    goal_handle.publish_feedback(feedback_msg)
-            else:
-                gerber = goal_handle.request.contents
-                scale = goal_handle.request.scale
+            command = goal_handle.request.command
+            if command in [
+                RobotCommand.WRITE_TEXT,
+                RobotCommand.START_SOLDERING, 
+                RobotCommand.RUN_SEQUENCE,
+            ]:
+                if goal_handle.request.skip_grasp:
+                    self.grisp_pen()
+                
+                if command == RobotCommand.WRITE_TEXT:
+                    for progress in self.typeSentenceHangul(goal_handle.request.contents):
+                        feedback_msg.progress = progress
+                        goal_handle.publish_feedback(feedback_msg)
+                elif command == RobotCommand.START_SOLDERING:
+                    gerber = goal_handle.request.contents
+                    scale = goal_handle.request.scale
 
-                self.get_logger().info(f"Gerber 파일 그리기: {gerber}")
+                    self.get_logger().info(f"Gerber 파일 그리기: {gerber}")
 
-                for progress in self.drawGerberPath(gerber, scale):
-                    self.get_logger().info(f'Feedback: {progress}')
+                    for progress in self.drawGerberPath(gerber, scale):
+                        self.get_logger().info(f'Feedback: {progress}')
 
-                    feedback_msg.progress = progress
-                    goal_handle.publish_feedback(feedback_msg)
+                        feedback_msg.progress = progress
+                        goal_handle.publish_feedback(feedback_msg)
+                else: # RUN_SEQUENCE
+                    raise NotImplementedError('Not implemented: RUN_SEQUENCE')
+
+            else: # GO_HOME, GRIP_PEN, RELEASE_PEN
+                if command == RobotCommand.GRIP_PEN:
+                    self.grisp_pen()
+                elif command == RobotCommand.RELEASE_PEN:
+                    self.open_gripper()
+                else:
+                    self.init_robot()
+                
+                feedback_msg.progress = 100.0
+                goal_handle.publish_feedback(feedback_msg)
                 
             goal_handle.succeed()
         except Exception as e:
@@ -414,6 +434,143 @@ class BaseController(Node):
             plt.axis('equal')
             plt.grid(True, alpha=0.3)
             plt.show()
+    
+    def execute_voice_command(self, command: str, params: dict) -> tuple:
+        """
+        음성/채팅 명령 실행
+
+        Args:
+            command: 명령 타입 (예: "WRITE_TEXT", "START_SOLDERING")
+            params: 명령 파라미터
+
+        Returns:
+            (success: bool, message: str)
+        """
+        try:
+            if command == "WRITE_TEXT":
+                text = params.get("text", "")
+                if text:
+                    self.get_logger().info(f"음성 명령: '{text}' 쓰기")
+                    self.typeSentenceHangul(text)
+                    return True, f"'{text}' 쓰기를 완료했습니다."
+                return False, "쓸 텍스트가 없습니다."
+
+            elif command == "START_SOLDERING":
+                gerber_path = params.get("file_path")
+                scale = params.get("scale", 1.0)
+                if gerber_path:
+                    self.get_logger().info(f"음성 명령: 납땜 시작 ({gerber_path})")
+                    self.drawGerberPath(gerber_path, scale)
+                    return True, "납땜을 완료했습니다."
+                return False, "Gerber 파일이 필요합니다."
+
+            elif command == "GO_HOME":
+                self.get_logger().info("음성 명령: 홈 위치로 이동")
+                self.init_robot()
+                return True, "홈 위치로 이동했습니다."
+
+            elif command == "STOP":
+                self.get_logger().info("음성 명령: 정지")
+                release_force()
+                release_compliance_ctrl()
+                return True, "동작을 중지했습니다."
+
+            elif command == "GRIP_PEN":
+                self.get_logger().info("음성 명령: 펜 잡기")
+                self.grisp_pen()
+                return True, "펜을 잡았습니다."
+
+            elif command == "RELEASE_PEN":
+                self.get_logger().info("음성 명령: 펜 놓기")
+                self.open_gripper()
+                return True, "펜을 놓았습니다."
+
+            elif command == "GET_STATUS":
+                status = "현재 대기 중입니다."
+                return True, status
+
+            else:
+                return False, f"알 수 없는 명령입니다: {command}"
+
+        except Exception as e:
+            self.get_logger().error(f"명령 실행 오류: {e}")
+            return False, f"오류 발생: {str(e)}"
+
+'''
+def execute_voice_command(self, command: ParsedCommand):
+        """
+            음성/채팅 명령 실행
+            command: RobotCommand
+            parameters: Dict[str, Any] = field(default_factory=dict)
+            original_text: str = ""
+            response_text: str = ""
+        """
+        if not VOICE_AVAILABLE:
+            return
+
+        cmd_type = command.command
+        params = command.parameters
+
+        if cmd_type == RobotCommand.WRITE_TEXT:
+            self.run_process()
+            text = params.get("text", "")
+            if text:
+                self.run_process()
+
+        elif cmd_type == RobotCommand.START_SOLDERING:
+            # 파일 경로가 있으면 사용, 없으면 마지막 로드된 Gerber 사용
+            file_path = params.get("file_path") or self.upload_box.file_path
+            if file_path:
+                self.run_process()
+            else:
+                if CHAT_AVAILABLE:
+                    self.chat_widget.display_system_message("Gerber 파일을 먼저 업로드해주세요.")
+
+        elif cmd_type == RobotCommand.LOAD_GERBER:
+            file_path = params.get("file_path", "")
+            if file_path and os.path.exists(file_path):
+                self.current_gerber_path = file_path
+                if CHAT_AVAILABLE:
+                    self.chat_widget.display_system_message(f"Gerber 파일 로드됨: {file_path}")
+
+        elif cmd_type == RobotCommand.GO_HOME:
+            # 홈 위치로 이동 (추후 구현)
+            if CHAT_AVAILABLE:
+                self.chat_widget.display_system_message("홈 위치로 이동합니다.")
+
+        elif cmd_type == RobotCommand.STOP:
+            # 중지 (추후 구현)
+            if CHAT_AVAILABLE:
+                self.chat_widget.display_system_message("작업을 중지합니다.")
+
+        elif cmd_type == RobotCommand.GET_STATUS:
+            # 상태 확인
+            status = "현재 대기 중입니다."
+            if self.current_gerber_path:
+                status += f"\n로드된 파일: {os.path.basename(self.current_gerber_path)}"
+            if CHAT_AVAILABLE:
+                self.chat_widget.display_system_message(status)
+
+        elif cmd_type == RobotCommand.GRIP_PEN:
+            # 그리퍼 열기 (펜 잡기 대신)
+            if CHAT_AVAILABLE:
+                self.chat_widget.display_system_message("그리퍼를 엽니다...")
+            self.gripper_open()
+
+        elif cmd_type == RobotCommand.RUN_SEQUENCE:
+            # 전체 시퀀스
+            text = params.get("text", "")
+            if not text:
+                text = self.input_text.toPlainText().strip() if hasattr(self, 'input_text') else ""
+            if text:
+                self.pending_sentence = text
+                if CHAT_AVAILABLE:
+                    self.chat_widget.display_system_message(f"전체 시퀀스 시작: '{text}'")
+                self.run_full_sequence()
+            else:
+                if CHAT_AVAILABLE:
+                    self.chat_widget.display_system_message("쓸 문장을 먼저 입력해주세요.")
+'''
 
 def main(args=None):
     node = BaseController()
