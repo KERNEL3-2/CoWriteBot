@@ -168,24 +168,46 @@ class Sim2RealWorker(QThread):
     SIM2REAL_PATH = os.path.join(HOME, "sim2real/sim2real/run_sim2real_unified.py")
     CALIBRATION_PATH = os.path.join(HOME, "sim2real/sim2real/config/calibration_eye_to_hand.npz")
     DEFAULT_CHECKPOINT = os.path.join(HOME, "e0509_osc_7/model_4999.pt")
+    TRIGGER_FILE = "/tmp/sim2real_trigger"
 
     def __init__(self, checkpoint: str = None, timeout: float = 300.0):
         super().__init__()
         self.checkpoint = checkpoint or self.DEFAULT_CHECKPOINT
         self.timeout = timeout
         self.process = None
+        # 트리거 파일 초기화 (이전 것 삭제)
+        self._clear_trigger()
+
+    def _clear_trigger(self):
+        """트리거 파일 삭제"""
+        try:
+            if os.path.exists(self.TRIGGER_FILE):
+                os.remove(self.TRIGGER_FILE)
+        except:
+            pass
+
+    def trigger_start(self):
+        """UI에서 시작 트리거 (파일 생성)"""
+        try:
+            with open(self.TRIGGER_FILE, 'w') as f:
+                f.write('start')
+            print("[Sim2Real] 시작 트리거 전송됨")
+        except Exception as e:
+            print(f"[Sim2Real] 트리거 파일 생성 실패: {e}")
 
     def run(self):
         """sim2real 프로세스 실행"""
+        self._clear_trigger()
+
         cmd = [
             "python3", self.SIM2REAL_PATH,
             "--mode", "ik",
             "--calibration", self.CALIBRATION_PATH,
             "--checkpoint", self.checkpoint,
+            "--trigger-file", self.TRIGGER_FILE,
         ]
 
         print(f"[Sim2Real] 실행: {' '.join(cmd)}")
-        print("[Sim2Real] 'g' 키를 눌러 Policy 실행 시작")
 
         try:
             self.process = subprocess.Popen(
@@ -202,10 +224,13 @@ class Sim2RealWorker(QThread):
                 if stdout:
                     print(stdout)
 
-                if self.process.returncode == 0:
+                rc = self.process.returncode
+                # 종료 코드 처리: 0 또는 시그널로 종료(-6, -9, -15 등)도 성공으로 처리
+                # (그리퍼가 닫힌 후 OpenCV 창 종료 시 발생할 수 있음)
+                if rc == 0 or rc in [-6, -9, -15, -2]:
                     self.finished_signal.emit(SUCCEEDED, "Sim2Real 펜 잡기 완료!")
                 else:
-                    self.finished_signal.emit(FAILED, f"Sim2Real 실패 (코드: {self.process.returncode})")
+                    self.finished_signal.emit(FAILED, f"Sim2Real 실패 (코드: {rc})")
 
             except subprocess.TimeoutExpired:
                 self.process.kill()
@@ -215,12 +240,15 @@ class Sim2RealWorker(QThread):
             self.finished_signal.emit(UNEXPECTED_ERROR, f"sim2real 스크립트를 찾을 수 없습니다: {self.SIM2REAL_PATH}")
         except Exception as e:
             self.finished_signal.emit(UNEXPECTED_ERROR, f"Sim2Real 오류: {e}")
+        finally:
+            self._clear_trigger()
 
     def stop(self):
         """프로세스 중지"""
         if self.process and self.process.poll() is None:
             self.process.terminate()
             self.process.wait(timeout=5)
+        self._clear_trigger()
 
 
 class FileUploadBox(QLabel):
@@ -534,9 +562,28 @@ class MainUI(QWidget):
 
         # ★ 4. 로딩 오버레이 생성 (마지막에 생성해야 맨 위에 뜸)
         self.loading_overlay = LoadingOverlay(self)
-    
+
+        # ★ 5. Sim2Real 시작 버튼 (로딩 오버레이 위에 표시)
+        self.btn_sim2real_start = QPushButton("시작", self)
+        self.btn_sim2real_start.setFixedSize(150, 50)
+        self.btn_sim2real_start.setStyleSheet("""
+            QPushButton {
+                font-size: 18px; font-weight: bold; border-radius: 10px;
+                background-color: #27ae60; color: white;
+            }
+            QPushButton:hover { background-color: #2ecc71; }
+            QPushButton:pressed { background-color: #1e8449; }
+            QPushButton:disabled { background-color: #7f8c8d; color: #bdc3c7; }
+        """)
+        self.btn_sim2real_start.clicked.connect(self.trigger_sim2real_start)
+        self.btn_sim2real_start.hide()
+
     def resizeEvent(self, event):
         self.loading_overlay.resize(self.size())
+        # 시작 버튼 중앙 하단에 배치
+        btn_x = (self.width() - self.btn_sim2real_start.width()) // 2
+        btn_y = self.height() // 2 + 60
+        self.btn_sim2real_start.move(btn_x, btn_y)
         super().resizeEvent(event)
     
     def update_button_state(self, flag = None):
@@ -636,35 +683,33 @@ class MainUI(QWidget):
 
     def run_sim2real(self):
         """Sim2Real 펜 잡기 실행"""
-        # 확인 대화상자
-        reply = QMessageBox.question(
-            self, "Sim2Real 펜 잡기",
-            "Sim2Real을 실행하여 펜을 잡습니다.\n\n"
-            "※ 'g' 키를 눌러 Policy 실행을 시작하세요.\n"
-            "※ 펜 도달 시 자동으로 그리퍼가 닫힙니다.\n\n"
-            "계속하시겠습니까?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes
-        )
-
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-
-        # 로딩 화면 표시
-        self.loading_overlay.label.setText("Sim2Real 실행 중...\n(터미널에서 'g' 키를 눌러 시작)")
+        # 로딩 화면 표시 (시작 버튼 포함)
+        self.loading_overlay.label.setText("Sim2Real 대기 중...\n카메라 창에서 펜 위치 확인 후\n아래 버튼을 누르세요")
         self.loading_overlay.show()
         self.btn_sim2real.setEnabled(False)
         self.btn_preview.setEnabled(False)
         self.btn_execute.setEnabled(False)
+
+        # 시작 버튼 표시
+        self.btn_sim2real_start.show()
+        self.btn_sim2real_start.setEnabled(True)
 
         # Sim2Real 워커 시작
         self.sim2real_worker = Sim2RealWorker()
         self.sim2real_worker.finished_signal.connect(self.on_sim2real_finished)
         self.sim2real_worker.start()
 
+    def trigger_sim2real_start(self):
+        """UI에서 Sim2Real 시작 트리거"""
+        if hasattr(self, 'sim2real_worker') and self.sim2real_worker.isRunning():
+            self.sim2real_worker.trigger_start()
+            self.btn_sim2real_start.setEnabled(False)
+            self.loading_overlay.label.setText("Policy 실행 중...\n펜 도달 시 자동 완료")
+
     def on_sim2real_finished(self, result_code, result_msg):
         """Sim2Real 완료 처리"""
         self.loading_overlay.hide()
+        self.btn_sim2real_start.hide()
         self.loading_overlay.label.setText("요청 처리 중...")
         self.btn_sim2real.setEnabled(True)
         self.update_button_state()
