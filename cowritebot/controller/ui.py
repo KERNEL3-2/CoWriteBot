@@ -210,19 +210,15 @@ class Sim2RealWorker(QThread):
         print(f"[Sim2Real] 실행: {' '.join(cmd)}")
 
         try:
+            # stdout/stderr 캡처하지 않음 (OpenCV 쓰레드 충돌 방지)
             self.process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
                 cwd=os.path.dirname(self.SIM2REAL_PATH),
             )
 
             # 프로세스 완료 대기 (timeout 적용)
             try:
-                stdout, _ = self.process.communicate(timeout=self.timeout)
-                if stdout:
-                    print(stdout)
+                self.process.wait(timeout=self.timeout)
 
                 rc = self.process.returncode
                 # 종료 코드 처리: 0 또는 시그널로 종료(-6, -9, -15 등)도 성공으로 처리
@@ -234,6 +230,7 @@ class Sim2RealWorker(QThread):
 
             except subprocess.TimeoutExpired:
                 self.process.kill()
+                self.process.wait()
                 self.finished_signal.emit(FAILED, f"Sim2Real 타임아웃 ({self.timeout}초)")
 
         except FileNotFoundError:
