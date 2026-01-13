@@ -70,20 +70,20 @@ class BaseController(Node):
         try:
             command = goal_handle.request.command
             if command in [
-                RobotCommand.WRITE_TEXT,
-                RobotCommand.START_SOLDERING, 
-                RobotCommand.RUN_SEQUENCE,
+                RobotCommand.WRITE_TEXT.value,
+                RobotCommand.START_SOLDERING.value,
+                RobotCommand.RUN_SEQUENCE.value,
             ]:
-                if goal_handle.request.skip_grasp:
+                if not goal_handle.request.skip_grasp:
                     self.grisp_pen()
                 
-                if command == RobotCommand.WRITE_TEXT:
-                    for progress in self.typeSentenceHangul(goal_handle.request.contents):
+                scale = goal_handle.request.scale
+                if command == RobotCommand.WRITE_TEXT.value:
+                    for progress in self.typeSentenceHangul(goal_handle.request.contents, scale):
                         feedback_msg.progress = progress
                         goal_handle.publish_feedback(feedback_msg)
-                elif command == RobotCommand.START_SOLDERING:
+                elif command == RobotCommand.START_SOLDERING.value:
                     gerber = goal_handle.request.contents
-                    scale = goal_handle.request.scale
 
                     self.get_logger().info(f"Gerber 파일 그리기: {gerber}")
 
@@ -96,9 +96,9 @@ class BaseController(Node):
                     raise NotImplementedError('Not implemented: RUN_SEQUENCE')
 
             else: # GO_HOME, GRIP_PEN, RELEASE_PEN
-                if command == RobotCommand.GRIP_PEN:
+                if command == RobotCommand.GRIP_PEN.value:
                     self.grisp_pen()
-                elif command == RobotCommand.RELEASE_PEN:
+                elif command == RobotCommand.RELEASE_PEN.value:
                     self.open_gripper()
                 else:
                     self.init_robot()
@@ -112,6 +112,7 @@ class BaseController(Node):
             message = f'작업 도중 문제가 발생하였습니다. ({e})'
             goal_handle.abort()
         finally:
+            self.init_robot()
             result = UserInput.Result()
             result.is_success = is_success
             result.message = message
@@ -122,9 +123,7 @@ class BaseController(Node):
     def init_robot(self):
         # 준비 자세
         JReady = [0, 0, 90, 0, 90, -90]
-        self.get_logger().info("준비 자세로 이동합니다.")
-        movej(JReady, vel=VELOCITY, acc=ACC)        
-        self.get_logger().info("글씨 쓸 준비 완료")
+        movej(JReady, vel=VELOCITY, acc=ACC)
     
     def open_gripper(self):
         result = self.open_gripper_client.call_async(self.req)
@@ -280,25 +279,6 @@ class BaseController(Node):
             self.get_logger().info(f"penup")
             self.penup()
             yield round((i + 1) / num_of_strokes, 2)
-    
-    def visualize_robot_path(self, sentence):
-        strokes = self.ttp.text_to_path(sentence)
-        if not strokes:
-            print("시각화할 데이터가 없습니다.")
-            return
-
-        plt.figure(figsize=(10, 6))
-
-        for stroke in strokes:
-            _, xs, ys = self.strokeToPosxList(stroke)
-            plt.plot(xs, ys, marker='.', markersize=4, linestyle='-', label=f'Stroke ')
-
-        plt.title("Skeletonized Single Line Path")
-        plt.xlabel("X (mm)")
-        plt.ylabel("Y (mm)")
-        plt.axis('equal')
-        plt.grid(True)
-        plt.show()
 
     def drawGerberPath(self, gerber_path: str, scale: float = 1.0):
         """

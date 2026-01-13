@@ -91,13 +91,13 @@ class ServiceWorker(Node, QThread):
     finished_signal = pyqtSignal(int, str) # 결과를 메인으로 보내는 신호
     progress_signal = pyqtSignal(float)
 
-    def __init__(self, command, contents, skip_grasp, scale = 1.0):
+    def __init__(self, command: RobotCommand, contents, skip_grasp, scale = 1.0):
         Node.__init__(self, 'request_user_input_node')
         QThread.__init__(self)
 
         self._action_client = ActionClient(self, UserInput, 'get_user_input')
         self._request_info = {
-            'command': command,
+            'command': command.value,
             'contents': contents,
             'skip_grasp': skip_grasp,
             'scale': scale
@@ -304,7 +304,7 @@ class MainUI(QWidget):
 
     def initUI(self):
         self.setWindowTitle('CowriteBot Controller')
-        self.setFixedSize(420, 620) # 높이를 조금 늘림
+        self.setFixedSize(420, 630) # 높이를 조금 늘림
 
         # ★ 1. 전체 레이아웃 (Root Stack 사용)
         self.main_layout = QVBoxLayout(self)
@@ -385,9 +385,10 @@ class MainUI(QWidget):
         self.scale_spin_box = QDoubleSpinBox()
 
         # 설정: 최소/최대값, 소수점 자리수, 증감 간격
-        self.scale_spin_box.setRange(1.0, 3.0)
+        self.scale_spin_box.setRange(0.7, 3.0)
         self.scale_spin_box.setDecimals(1)  # 소수점 첫째 자리까지
         self.scale_spin_box.setSingleStep(0.1) # 화살표 클릭 시 0.1씩 변경
+        self.scale_spin_box.setValue(1.0)
         
         float_layout.addWidget(self.label_float)
         float_layout.addWidget(self.scale_spin_box)
@@ -489,7 +490,7 @@ class MainUI(QWidget):
         """입력 화면(초기 화면)으로 복귀"""
         self.root_stack.setCurrentIndex(0)
     
-    def run_process(self, command: RobotCommand = None, params: dict = None):
+    def run_process(self, _ = False, command: RobotCommand = None, params: dict = None):
         """[실행] 버튼 클릭 시 동작 로직"""
         # 1. 입력 데이터
         if command is None:
@@ -520,7 +521,7 @@ class MainUI(QWidget):
         self.loading_overlay.show()
         self.update_button_state(False)
 
-        skip_grasp = self.skip_grasp_check.isChecked()
+        skip_grasp = not self.skip_grasp_check.isChecked()
         scale = self.scale_spin_box.value()
 
         # 3. 워커 쓰레드 시작 (ROS 요청)
@@ -589,7 +590,7 @@ class MainUI(QWidget):
             RobotCommand.RELEASE_PEN,
             RobotCommand.RUN_SEQUENCE,
         ]:
-            self.run_process(cmd_type, params)
+            self.run_process(command=cmd_type, params=params)
 
 def main(args=None):
     rclpy.init()
