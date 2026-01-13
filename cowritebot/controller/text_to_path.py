@@ -172,10 +172,11 @@ class TextToPath:
 
         return strokes
 
-    def convert_pixels_to_robot_mm(self, strokes, scale=0.07):
+    def convert_pixels_to_robot_mm(self, strokes, scale=1.0):
         """
         좌표 변환 및 RDP 알고리즘을 통한 포인트 최적화
         """
+        scale *= 0.07
         robot_paths = []
         for stroke in strokes:
             # 1. 픽셀 -> 로봇 좌표 변환
@@ -216,9 +217,9 @@ class TextToPath:
             y_min = min(y_min, *y_vals)
         return (x_min, y_min)
     
-    def text_to_path(self, text) -> list:
+    def text_to_path(self, text, scale) -> list:
         pixel_strokes = self.text_to_skeleton_paths(text)
-        strokes = self.convert_pixels_to_robot_mm(pixel_strokes)
+        strokes = self.convert_pixels_to_robot_mm(pixel_strokes, scale)
         (offset_x, offset_y) = self.get_min_xy(strokes)
         result = []
         for stroke in strokes:

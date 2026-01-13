@@ -251,7 +251,7 @@ def generate_launch_description():
         robot_controller_spawner,
         joint_state_broadcaster_spawner,
         control_node,
-        realsense_launch,
+        # realsense_launch,
         gripper_launch
     ]
 

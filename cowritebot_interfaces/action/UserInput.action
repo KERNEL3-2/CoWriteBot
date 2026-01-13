@@ -1,0 +1,9 @@
+int32 command
+string contents
+float32 scale
+bool skip_grasp
+---
+bool is_success
+string message
+---
+float32 progress
