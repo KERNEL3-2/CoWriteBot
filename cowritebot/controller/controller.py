@@ -415,12 +415,34 @@ class BaseController(Node):
             plt.show()
     
 def main(args=None):
+    import argparse
+    parser = argparse.ArgumentParser(description='CoWriteBot Controller')
+    parser.add_argument('--sentence', '-s', type=str, default=None,
+                       help='쓸 문장 (지정 시 직접 실행, 미지정 시 action server 모드)')
+    parser.add_argument('--skip-grasp', action='store_true',
+                       help='펜 잡기 스킵')
+    parser.add_argument('--scale', type=float, default=1.0,
+                       help='글씨 크기 배율')
+    parsed_args = parser.parse_args()
+
     node = BaseController()
     try:
-        rclpy.spin(node)
-    except Exception:
-        pass
+        if parsed_args.sentence:
+            # 직접 실행 모드
+            if not parsed_args.skip_grasp:
+                node.grisp_pen()
+            node.get_logger().info(f"'{parsed_args.sentence}' 쓰기 시작")
+            for progress in node.typeSentenceHangul(parsed_args.sentence, parsed_args.scale):
+                node.get_logger().info(f"진행률: {progress * 100:.0f}%")
+            node.get_logger().info("쓰기 완료!")
+        else:
+            # Action Server 모드
+            rclpy.spin(node)
+    except Exception as e:
+        node.get_logger().error(f"오류: {e}")
     finally:
+        release_force()
+        release_compliance_ctrl()
         node.destroy_node()
         rclpy.shutdown()
 
