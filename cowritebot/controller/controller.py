@@ -57,6 +57,7 @@ class BaseController(Node):
         self.ttp = TextToPath()
 
         self.init_robot()
+        self.get_logger().info('Robot is ready.')
 
     def cb_get_user_input(self, goal_handle):
         self.get_logger().info('Executing goal...')
@@ -103,7 +104,7 @@ class BaseController(Node):
                 else:
                     self.init_robot()
                 
-                feedback_msg.progress = 100.0
+                feedback_msg.progress = 1.0
                 goal_handle.publish_feedback(feedback_msg)
                 
             goal_handle.succeed()
@@ -112,7 +113,6 @@ class BaseController(Node):
             message = f'작업 도중 문제가 발생하였습니다. ({e})'
             goal_handle.abort()
         finally:
-            self.init_robot()
             result = UserInput.Result()
             result.is_success = is_success
             result.message = message
@@ -330,7 +330,8 @@ class BaseController(Node):
             self.get_logger().info(f"Stroke {i+1}/{len(strokes)} 그리기 ({len(stroke)} points)")
             self.movelBeforeWrite(robot_stroke[0])
             self.pendown()
-            movesx(self.setZ(robot_stroke), vel=80, acc=30)
+            for pos in self.setZ(robot_stroke)[1:]:
+                movel(pos, vel=80, acc=30)
             self.penup()
             yield round((i + 1) / num_of_strokes, 3)
 

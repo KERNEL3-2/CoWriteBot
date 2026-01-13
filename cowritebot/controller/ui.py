@@ -96,6 +96,8 @@ class ServiceWorker(Node, QThread):
         QThread.__init__(self)
 
         self._action_client = ActionClient(self, UserInput, 'get_user_input')
+        if not contents:
+            contents = ''
         self._request_info = {
             'command': command.value,
             'contents': contents,
@@ -137,14 +139,16 @@ class ServiceWorker(Node, QThread):
             self.finished_signal.emit(UNEXPECTED_ERROR, 'Goal rejected :(')
             return
 
-        self.get_logger().info('Goal accepted :)')
-
         # 4. 결과 대기 (비동기)
         get_result_future = goal_handle.get_result_async()
-
-        # 5. 결과가 나올 때까지 Spin (★ 핵심: 피드백 콜백도 이 루프 덕분에 실행됨)
-        while rclpy.ok() and not get_result_future.done():
-            rclpy.spin_once(self, timeout_sec=0.1)
+        try:
+            # 5. 결과가 나올 때까지 Spin (★ 핵심: 피드백 콜백도 이 루프 덕분에 실행됨)
+            while rclpy.ok() and not get_result_future.done():
+                rclpy.spin_once(self, timeout_sec=0.1)
+        except ValueError:
+            self.executor.shutdown()
+            while rclpy.ok() and not get_result_future.done():
+                rclpy.spin_once(self, timeout_sec=0.1)
 
         # 6. 최종 결과 처리
         result = get_result_future.result().result
@@ -513,7 +517,7 @@ class MainUI(QWidget):
                 if not contents:
                     contents = self.upload_box.file_path
 
-        if not contents:
+        if not contents and command in [RobotCommand.WRITE_TEXT, RobotCommand.START_SOLDERING]:
             QMessageBox.warning(self, "경고", "내용을 입력해주세요.")
             return
 
