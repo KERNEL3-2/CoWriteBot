@@ -1,7 +1,8 @@
 import sys
 import os
-from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QPushButton, QLabel, QFileDialog, QStackedWidget, 
+import subprocess
+from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
+                             QPushButton, QLabel, QFileDialog, QStackedWidget,
                              QRadioButton, QMessageBox, QTextEdit, QProgressBar,
                              QCheckBox, QDoubleSpinBox)
 from PyQt6.QtGui import QPixmap, QDragEnterEvent, QDropEvent, QColor
@@ -155,6 +156,72 @@ class ServiceWorker(Node, QThread):
         self.get_logger().info(f'Action Finished. Success: {result.is_success}')
 
         self.finished_signal.emit(SUCCEEDED if result.is_success else FAILED, f'Action Finished. Success: {result.is_success}')
+
+
+# --- [Sim2Real 워커 쓰레드] ---
+class Sim2RealWorker(QThread):
+    """sim2real 펜 잡기를 실행하는 워커 쓰레드"""
+    finished_signal = pyqtSignal(int, str)  # 결과를 메인으로 보내는 신호
+
+    # sim2real 경로 설정
+    HOME = os.path.expanduser("~")
+    SIM2REAL_PATH = os.path.join(HOME, "sim2real/sim2real/run_sim2real_unified.py")
+    CALIBRATION_PATH = os.path.join(HOME, "sim2real/sim2real/config/calibration_eye_to_hand.npz")
+    DEFAULT_CHECKPOINT = os.path.join(HOME, "e0509_osc_7/model_4999.pt")
+
+    def __init__(self, checkpoint: str = None, timeout: float = 300.0):
+        super().__init__()
+        self.checkpoint = checkpoint or self.DEFAULT_CHECKPOINT
+        self.timeout = timeout
+        self.process = None
+
+    def run(self):
+        """sim2real 프로세스 실행"""
+        cmd = [
+            "python3", self.SIM2REAL_PATH,
+            "--mode", "ik",
+            "--calibration", self.CALIBRATION_PATH,
+            "--checkpoint", self.checkpoint,
+        ]
+
+        print(f"[Sim2Real] 실행: {' '.join(cmd)}")
+        print("[Sim2Real] 'g' 키를 눌러 Policy 실행 시작")
+
+        try:
+            self.process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                cwd=os.path.dirname(self.SIM2REAL_PATH),
+            )
+
+            # 프로세스 완료 대기 (timeout 적용)
+            try:
+                stdout, _ = self.process.communicate(timeout=self.timeout)
+                if stdout:
+                    print(stdout)
+
+                if self.process.returncode == 0:
+                    self.finished_signal.emit(SUCCEEDED, "Sim2Real 펜 잡기 완료!")
+                else:
+                    self.finished_signal.emit(FAILED, f"Sim2Real 실패 (코드: {self.process.returncode})")
+
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.finished_signal.emit(FAILED, f"Sim2Real 타임아웃 ({self.timeout}초)")
+
+        except FileNotFoundError:
+            self.finished_signal.emit(UNEXPECTED_ERROR, f"sim2real 스크립트를 찾을 수 없습니다: {self.SIM2REAL_PATH}")
+        except Exception as e:
+            self.finished_signal.emit(UNEXPECTED_ERROR, f"Sim2Real 오류: {e}")
+
+    def stop(self):
+        """프로세스 중지"""
+        if self.process and self.process.poll() is None:
+            self.process.terminate()
+            self.process.wait(timeout=5)
+
 
 class FileUploadBox(QLabel):
     file_selected = pyqtSignal(bool)
@@ -406,6 +473,20 @@ class MainUI(QWidget):
 
         option_layout.addWidget(self.skip_grasp_check)
 
+        # --- Sim2Real 펜 잡기 버튼 ---
+        self.btn_sim2real = QPushButton("펜 잡기 (Sim2Real)")
+        self.btn_sim2real.setStyleSheet("""
+            QPushButton {
+                font-size: 14px; font-weight: bold; border-radius: 5px; min-height: 40px;
+                background-color: #9b59b6; color: white;
+            }
+            QPushButton:hover { background-color: #8e44ad; }
+            QPushButton:pressed { background-color: #7d3c98; }
+            QPushButton:disabled { background-color: #bdc3c7; color: #7f8c8d; }
+        """)
+        self.btn_sim2real.clicked.connect(self.run_sim2real)
+        input_page_layout.addWidget(self.btn_sim2real)
+
         # 하단 버튼 (미리보기, 실행)
         self.btn_preview = QPushButton("미리보기")
         self.btn_execute = QPushButton("실 행")
@@ -552,7 +633,51 @@ class MainUI(QWidget):
                 QMessageBox.warning(self, "경고", "파일를 먼저 업로드해주세요!")
             else:
                 visualize_gerber(filepath=file_path, scale=scale)
-    
+
+    def run_sim2real(self):
+        """Sim2Real 펜 잡기 실행"""
+        # 확인 대화상자
+        reply = QMessageBox.question(
+            self, "Sim2Real 펜 잡기",
+            "Sim2Real을 실행하여 펜을 잡습니다.\n\n"
+            "※ 'g' 키를 눌러 Policy 실행을 시작하세요.\n"
+            "※ 펜 도달 시 자동으로 그리퍼가 닫힙니다.\n\n"
+            "계속하시겠습니까?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # 로딩 화면 표시
+        self.loading_overlay.label.setText("Sim2Real 실행 중...\n(터미널에서 'g' 키를 눌러 시작)")
+        self.loading_overlay.show()
+        self.btn_sim2real.setEnabled(False)
+        self.btn_preview.setEnabled(False)
+        self.btn_execute.setEnabled(False)
+
+        # Sim2Real 워커 시작
+        self.sim2real_worker = Sim2RealWorker()
+        self.sim2real_worker.finished_signal.connect(self.on_sim2real_finished)
+        self.sim2real_worker.start()
+
+    def on_sim2real_finished(self, result_code, result_msg):
+        """Sim2Real 완료 처리"""
+        self.loading_overlay.hide()
+        self.loading_overlay.label.setText("요청 처리 중...")
+        self.btn_sim2real.setEnabled(True)
+        self.update_button_state()
+
+        if result_code == SUCCEEDED:
+            QMessageBox.information(self, "성공", result_msg)
+            # 펜을 잡았으므로 체크박스 해제 (글씨 쓸 때 다시 잡지 않도록)
+            self.skip_grasp_check.setChecked(False)
+        elif result_code == FAILED:
+            QMessageBox.warning(self, "실패", result_msg)
+        else:
+            QMessageBox.critical(self, "오류", result_msg)
+
     def on_processing(self, result_code, result_msg):
         self.loading_overlay.hide()
         self.update_button_state(True)
