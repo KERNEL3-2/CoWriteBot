@@ -109,8 +109,11 @@ python pen_grasp_rl/scripts/play_v7.py --checkpoint <model_path>
 # 터미널 1: 로봇 bringup
 ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=<robot_ip>
 
-# 터미널 2: 런처 실행 (펜 접근 → 펜 잡기 → 글씨 쓰기 자동 진행)
-~/CoWriteBot/pen_write_launcher.py -s "안녕하세요"
+# 터미널 2: 그리퍼 서비스
+ros2 run e0509_gripper_description gripper_service_node.py --ros-args -p mode:=real
+
+# 터미널 3: 런처 실행 (펜 접근 → 펜 잡기 → 글씨 쓰기 자동 진행)
+~/CoWriteBot/cowritebot/pen_write_launcher.py -s "안녕하세요"
 ```
 
 #### 방법 B: 단계별 수동 실행
@@ -118,12 +121,16 @@ ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=<robot_
 # 터미널 1: 로봇 bringup
 ros2 launch e0509_gripper_description bringup.launch.py mode:=real host:=<robot_ip>
 
-# 터미널 2: Sim2Real 실행 (펜 위치로 접근)
-cd ~/sim2real/sim2real
-python3 run_sim2real.py --checkpoint <model_path>
+# 터미널 2: 그리퍼 서비스
+ros2 run e0509_gripper_description gripper_service_node.py --ros-args -p mode:=real
 
-# 터미널 3: 글씨 쓰기 실행 (펜 잡기 + 글씨 쓰기)
-source ~/CoWriteBot/install/setup.bash
+# 터미널 3: Sim2Real 실행 (펜 접근 + 잡기, 자동 종료)
+python3 ~/sim2real/sim2real/run_sim2real_unified.py \
+  --mode ik \
+  --checkpoint <model_path> \
+  --calibration ~/sim2real/sim2real/config/calibration_eye_to_hand.npz
+
+# 터미널 4: 글씨 쓰기 실행
 ros2 run cowritebot controller --sentence "안녕하세요"
 ```
 
@@ -136,19 +143,19 @@ ros2 run cowritebot controller --sentence "안녕하세요"
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  [1] sim2real (run_sim2real.py --auto-start --auto-exit)    │
+│  [1] sim2real (run_sim2real_unified.py --mode ik)           │
 │                                                              │
 │   • YOLO로 펜 캡 위치/방향 감지                              │
 │   • RL Policy가 TCP 델타 계산                                │
-│   • Differential IK로 관절 각도 변환                         │
-│   • 로봇 이동 → 펜 캡 2cm 이내 도달 시 자동 종료             │
+│   • Jacobian IK + 스플라인 궤적으로 부드러운 이동            │
+│   • 펜 방향으로 그리퍼 자동 정렬                             │
+│   • 펜 캡 5cm 이내 도달 시 그리퍼 닫기 + 자동 종료           │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  [2] controller (ros2 run cowritebot controller)            │
 │                                                              │
-│   • grisp_pen(): 그리퍼 열기 → 닫기 (펜 잡기)               │
 │   • TextToPath: 텍스트 → 로봇 경로 변환                      │
 │   • pendown(): 힘제어로 펜 내리기                            │
 │   • movesx(): 경로 따라 이동 (글씨 쓰기)                     │

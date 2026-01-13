@@ -8,9 +8,9 @@ Pen Write Launcher - sim2real 펜 잡기 + CoWriteBot 글씨 쓰기 통합 런�
     python pen_write_launcher.py -s "테스트" --dry-run       # 테스트 모드
 
 흐름:
-    1. sim2real 실행 (RL policy로 펜 위치로 접근)
-    2. 접근 완료 시 자동 종료
-    3. controller 실행 (그리퍼로 펜 잡기 + 글씨 쓰기)
+    1. sim2real 실행 (RL policy로 펜 접근 + 그리퍼로 잡기)
+    2. 목표 도달 시 자동 그리퍼 닫기 + 종료
+    3. controller 실행 (글씨 쓰기)
 """
 
 import argparse
@@ -21,7 +21,8 @@ import time
 
 # 경로 설정
 HOME = os.path.expanduser("~")
-SIM2REAL_PATH = os.path.join(HOME, "sim2real/sim2real/run_sim2real.py")
+SIM2REAL_PATH = os.path.join(HOME, "sim2real/sim2real/run_sim2real_unified.py")
+CALIBRATION_PATH = os.path.join(HOME, "sim2real/sim2real/config/calibration_eye_to_hand.npz")
 COWRITEBOT_PATH = os.path.join(HOME, "CoWriteBot")
 
 # ROS2 환경 설정 명령
@@ -31,34 +32,38 @@ source ~/doosan_ws/install/setup.bash
 """
 
 
-def run_sim2real(auto_start: bool = True, auto_exit: bool = True,
-                 checkpoint: str = None, timeout: float = 120.0) -> bool:
+def run_sim2real(checkpoint: str = None, timeout: float = 300.0) -> bool:
     """
-    sim2real 실행 (펜 위치로 접근)
+    sim2real 실행 (펜 접근 + 그리퍼 잡기)
 
     Args:
-        auto_start: 펜 감지 시 자동 시작
-        auto_exit: 목표 도달 시 자동 종료
-        checkpoint: 모델 경로 (기본값 사용 시 None)
+        checkpoint: 모델 경로 (필수)
         timeout: 최대 실행 시간
 
     Returns:
         bool: 성공 여부
     """
     print("=" * 60)
-    print("[1/2] sim2real 실행 - 펜 위치로 접근")
+    print("[1/2] sim2real 실행 - 펜 접근 + 잡기")
     print("=" * 60)
 
-    cmd = ["python3", SIM2REAL_PATH]
+    cmd = [
+        "python3", SIM2REAL_PATH,
+        "--mode", "ik",
+        "--calibration", CALIBRATION_PATH,
+    ]
 
-    if auto_start:
-        cmd.append("--auto-start")
-    if auto_exit:
-        cmd.append("--auto-exit")
     if checkpoint:
         cmd.extend(["--checkpoint", checkpoint])
+    else:
+        # 기본 체크포인트 경로
+        default_checkpoint = os.path.join(HOME, "e0509_osc_7/model_4999.pt")
+        cmd.extend(["--checkpoint", default_checkpoint])
 
     print(f"  명령: {' '.join(cmd)}")
+    print()
+    print("  ※ 'g' 키를 눌러 Policy 실행 시작")
+    print("  ※ 펜 도달 시 자동으로 그리퍼 닫기 + 종료")
     print()
 
     try:
@@ -83,31 +88,31 @@ def run_sim2real(auto_start: bool = True, auto_exit: bool = True,
         return False
 
 
-def run_controller(sentence: str, skip_grasp: bool = False) -> bool:
+def run_controller(sentence: str) -> bool:
     """
-    controller 실행 (펜 잡기 + 글씨 쓰기)
+    controller 실행 (글씨 쓰기)
+
+    sim2real에서 이미 펜을 잡았으므로 글씨 쓰기만 실행
 
     Args:
         sentence: 쓸 문장
-        skip_grasp: 펜 잡기 스킵
 
     Returns:
         bool: 성공 여부
     """
     print()
     print("=" * 60)
-    print("[2/2] controller 실행 - 펜 잡기 + 글씨 쓰기")
+    print("[2/2] controller 실행 - 글씨 쓰기")
     print("=" * 60)
 
-    # ros2 run 명령으로 실행
+    # ros2 run 명령으로 실행 (펜 잡기 스킵 - sim2real에서 이미 잡음)
     bash_cmd = f"""
 {ROS2_SETUP}
 cd {COWRITEBOT_PATH}
-ros2 run cowritebot controller --sentence "{sentence}" {"--skip-grasp" if skip_grasp else ""}
+ros2 run cowritebot controller --sentence "{sentence}" --skip-grasp
 """
 
     print(f"  문장: '{sentence}'")
-    print(f"  펜 잡기: {'스킵' if skip_grasp else '실행'}")
     print()
 
     try:
@@ -133,29 +138,25 @@ ros2 run cowritebot controller --sentence "{sentence}" {"--skip-grasp" if skip_g
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Pen Write Launcher - sim2real + CoWriteBot 통합 런처',
+        description='Pen Write Launcher - sim2real 펜 잡기 + CoWriteBot 글씨 쓰기 통합 런처',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 예제:
   python pen_write_launcher.py -s "안녕하세요"
-  python pen_write_launcher.py -s "Hello" --skip-approach
+  python pen_write_launcher.py -s "Hello" --skip-approach  # 이미 펜을 잡고 있을 때
   python pen_write_launcher.py -s "테스트" --dry-run
         """
     )
     parser.add_argument('--sentence', '-s', type=str, required=True,
                        help='쓸 문장 (한글 또는 영어)')
     parser.add_argument('--skip-approach', action='store_true',
-                       help='sim2real 접근 단계 스킵 (이미 펜 근처에 있을 때)')
-    parser.add_argument('--skip-grasp', action='store_true',
-                       help='펜 잡기 스킵 (이미 펜을 잡고 있을 때)')
+                       help='sim2real 스킵 (이미 펜을 잡고 있을 때)')
     parser.add_argument('--checkpoint', type=str, default=None,
-                       help='sim2real 모델 경로 (기본: ~/ikv7/model_99999.pt)')
-    parser.add_argument('--timeout', type=float, default=120.0,
-                       help='sim2real 최대 실행 시간 (초, 기본: 120)')
+                       help='sim2real 모델 경로 (기본: ~/e0509_osc_7/model_4999.pt)')
+    parser.add_argument('--timeout', type=float, default=300.0,
+                       help='sim2real 최대 실행 시간 (초, 기본: 300)')
     parser.add_argument('--dry-run', action='store_true',
                        help='실제 실행 없이 명령만 출력')
-    parser.add_argument('--manual-start', action='store_true',
-                       help="sim2real에서 'g' 키로 수동 시작 (기본: 자동 시작)")
 
     args = parser.parse_args()
 
@@ -164,17 +165,15 @@ def main():
     print("  Pen Write Launcher")
     print("=" * 60)
     print(f"  문장: '{args.sentence}'")
-    print(f"  sim2real 접근: {'스킵' if args.skip_approach else '실행'}")
-    print(f"  펜 잡기: {'스킵' if args.skip_grasp else '실행'}")
-    print(f"  시작 모드: {'수동 (g 키)' if args.manual_start else '자동'}")
+    print(f"  펜 잡기 (sim2real): {'스킵' if args.skip_approach else '실행'}")
     print("=" * 60)
 
     if args.dry_run:
         print("\n[DRY RUN] 실제 실행하지 않음")
         print(f"\n1. sim2real 명령:")
-        print(f"   python3 {SIM2REAL_PATH} --auto-start --auto-exit")
+        print(f"   python3 {SIM2REAL_PATH} --mode ik --calibration {CALIBRATION_PATH} --checkpoint <model>")
         print(f"\n2. controller 명령:")
-        print(f"   ros2 run cowritebot controller --sentence \"{args.sentence}\"")
+        print(f"   ros2 run cowritebot controller --sentence \"{args.sentence}\" --skip-grasp")
         return 0
 
     # 확인
@@ -187,27 +186,22 @@ def main():
 
     start_time = time.time()
 
-    # Step 1: sim2real (접근)
+    # Step 1: sim2real (펜 접근 + 잡기)
     if not args.skip_approach:
         success = run_sim2real(
-            auto_start=not args.manual_start,
-            auto_exit=True,
             checkpoint=args.checkpoint,
             timeout=args.timeout,
         )
         if not success:
-            print("\n[FAILED] sim2real 접근 실패")
+            print("\n[FAILED] sim2real 펜 잡기 실패")
             return 1
 
         # 잠시 대기 (로봇 안정화)
-        print("\n  로봇 안정화 대기 (2초)...")
-        time.sleep(2)
+        print("\n  로봇 안정화 대기 (1초)...")
+        time.sleep(1)
 
-    # Step 2: controller (펜 잡기 + 글씨 쓰기)
-    success = run_controller(
-        sentence=args.sentence,
-        skip_grasp=args.skip_grasp,
-    )
+    # Step 2: controller (글씨 쓰기)
+    success = run_controller(sentence=args.sentence)
 
     elapsed = time.time() - start_time
 
