@@ -533,19 +533,20 @@ class MainUI(QWidget):
         self.worker.start()
     
     def preview(self):
+        scale = self.scale_spin_box.value()
         if self.btn_text_mode.isChecked():
             # 텍스트 모드일 때
             content = self.input_text.toPlainText()
             if not content:
                 QMessageBox.warning(self, "경고", "텍스트를 입력해주세요!")
             else:
-                self.ttp.visualize_robot_path(self.ttp.text_to_path(content))
+                self.ttp.visualize_robot_path(self.ttp.text_to_path(content, scale))
         else:
             file_path = self.upload_box.file_path
             if not file_path:
                 QMessageBox.warning(self, "경고", "파일를 먼저 업로드해주세요!")
             else:
-                visualize_gerber(filepath=file_path)
+                visualize_gerber(filepath=file_path, scale=scale)
     
     def on_processing(self, result_code, result_msg):
         self.loading_overlay.hide()

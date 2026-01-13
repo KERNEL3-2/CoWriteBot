@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import matplotlib.pyplot as plt
 import numpy as np
 
-def visualize_gerber(filepath=None, separate_pads=False, output=None):
+def visualize_gerber(filepath=None, separate_pads=False, output=None, scale=1.0):
     """Gerber 파일 변환 과정 시각화"""
 
     from gerber_to_path import (
@@ -52,7 +52,7 @@ def visualize_gerber(filepath=None, separate_pads=False, output=None):
         ax1.set_title(f"1. Original Gerber: {os.path.basename(filepath)} (Flash: {flash_count})")
 
         # 2. 변환된 경로
-        gtp = GerberToPath(scale=1.0)
+        gtp = GerberToPath(scale)
         if separate_pads:
             strokes, pad_strokes = gtp.gerber_to_path(filepath, separate_pads=True)
         else:

@@ -261,15 +261,13 @@ class BaseController(Node):
         
         return result, xs, ys
     
-    def typeSentenceHangul(self, sentence):
+    def typeSentenceHangul(self, sentence, scale = 1.0):
         # 메인 루프
         self.get_logger().info("글씨 쓸 위치로 이동")
         movel(posx(init_posx), vel=VELOCITY, acc=ACC)
         
-        _strokes = self.ttp.text_to_path(sentence)
-
         strokes = []
-        for stroke in _strokes:
+        for stroke in self.ttp.text_to_path(sentence, scale):
             arr, *_ = self.strokeToPosxList(stroke)
             strokes.append(arr)
         
