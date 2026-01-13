@@ -252,6 +252,56 @@ class Sim2RealWorker(QThread):
         self._clear_trigger()
 
 
+# --- [Controller 워커 쓰레드 (subprocess 방식)] ---
+class ControllerWorker(QThread):
+    """controller를 subprocess로 실행하는 워커"""
+    finished_signal = pyqtSignal(int, str)
+    progress_signal = pyqtSignal(float)
+
+    def __init__(self, sentence: str, skip_grasp: bool = True, scale: float = 1.0):
+        super().__init__()
+        self.sentence = sentence
+        self.skip_grasp = skip_grasp
+        self.scale = scale
+        self.process = None
+
+    def run(self):
+        """controller subprocess 실행"""
+        # ROS2 환경 설정 포함 명령
+        cmd = f"""
+source /opt/ros/humble/setup.bash
+source ~/doosan_ws/install/setup.bash
+ros2 run cowritebot controller --sentence "{self.sentence}" --scale {self.scale} {'--skip-grasp' if self.skip_grasp else ''}
+"""
+        print(f"[Controller] 실행: {self.sentence}")
+
+        try:
+            self.process = subprocess.Popen(
+                ['bash', '-c', cmd],
+                start_new_session=True,
+            )
+
+            self.process.wait()
+            rc = self.process.returncode
+
+            if rc == 0:
+                self.finished_signal.emit(SUCCEEDED, "글씨 쓰기 완료!")
+            else:
+                self.finished_signal.emit(FAILED, f"Controller 실패 (코드: {rc})")
+
+        except Exception as e:
+            self.finished_signal.emit(UNEXPECTED_ERROR, f"Controller 오류: {e}")
+
+    def stop(self):
+        """프로세스 중지"""
+        if self.process and self.process.poll() is None:
+            try:
+                import signal
+                os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
+            except:
+                self.process.kill()
+
+
 class FileUploadBox(QLabel):
     file_selected = pyqtSignal(bool)
 
@@ -651,18 +701,24 @@ class MainUI(QWidget):
             return
 
         # 2. 로딩 화면 켜기 & 버튼 비활성화
+        self.loading_overlay.label.setText("글씨 쓰는 중...")
         self.loading_overlay.show()
         self.update_button_state(False)
 
         skip_grasp = not self.skip_grasp_check.isChecked()
         scale = self.scale_spin_box.value()
 
-        # 3. 워커 쓰레드 시작 (ROS 요청)
-        self.worker = ServiceWorker(command, contents, skip_grasp, scale)
-        
+        # 3. 워커 쓰레드 시작 (subprocess 방식)
+        if command == RobotCommand.WRITE_TEXT:
+            self.worker = ControllerWorker(contents, skip_grasp, scale)
+        else:
+            # Gerber 등 다른 명령은 기존 방식 (action server)
+            self.worker = ServiceWorker(command, contents, skip_grasp, scale)
+
         # 쓰레드가 끝났을 때 실행될 함수 연결
         self.worker.finished_signal.connect(self.on_processing)
-        self.worker.progress_signal.connect(self.set_progress)
+        if hasattr(self.worker, 'progress_signal'):
+            self.worker.progress_signal.connect(self.set_progress)
         self.set_progress(0)
         self.worker.start()
     
@@ -726,11 +782,12 @@ class MainUI(QWidget):
 
     def on_processing(self, result_code, result_msg):
         self.loading_overlay.hide()
+        self.loading_overlay.label.setText("요청 처리 중...")
         self.update_button_state(True)
 
         # 2. 결과 처리
         if result_code == UNEXPECTED_ERROR:
-            QMessageBox.critical(self, "에러", "서비스 연결에 실패했습니다.")
+            QMessageBox.critical(self, "에러", result_msg or "서비스 연결에 실패했습니다.")
             return
         
         elif result_code == FAILED:
