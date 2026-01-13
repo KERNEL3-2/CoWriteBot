@@ -210,10 +210,11 @@ class Sim2RealWorker(QThread):
         print(f"[Sim2Real] 실행: {' '.join(cmd)}")
 
         try:
-            # stdout/stderr 캡처하지 않음 (OpenCV 쓰레드 충돌 방지)
+            # 새 프로세스 그룹으로 실행 (종료 시 자식 프로세스도 함께 종료)
             self.process = subprocess.Popen(
                 cmd,
                 cwd=os.path.dirname(self.SIM2REAL_PATH),
+                start_new_session=True,
             )
 
             # 프로세스 완료 대기 (timeout 적용)
@@ -222,15 +223,15 @@ class Sim2RealWorker(QThread):
 
                 rc = self.process.returncode
                 # 종료 코드 처리: 0 또는 시그널로 종료(-6, -9, -15 등)도 성공으로 처리
-                # (그리퍼가 닫힌 후 OpenCV 창 종료 시 발생할 수 있음)
                 if rc == 0 or rc in [-6, -9, -15, -2]:
                     self.finished_signal.emit(SUCCEEDED, "Sim2Real 펜 잡기 완료!")
                 else:
                     self.finished_signal.emit(FAILED, f"Sim2Real 실패 (코드: {rc})")
 
             except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
+                # 프로세스 그룹 전체 종료
+                import signal
+                os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
                 self.finished_signal.emit(FAILED, f"Sim2Real 타임아웃 ({self.timeout}초)")
 
         except FileNotFoundError:
@@ -243,8 +244,11 @@ class Sim2RealWorker(QThread):
     def stop(self):
         """프로세스 중지"""
         if self.process and self.process.poll() is None:
-            self.process.terminate()
-            self.process.wait(timeout=5)
+            try:
+                import signal
+                os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
+            except:
+                self.process.kill()
         self._clear_trigger()
 
 
