@@ -295,8 +295,10 @@ class BaseController(Node):
         self.get_logger().info(f"Gerber 파일 로드: {gerber_path}")
 
         if GERBONARA_AVAILABLE:
+            self.get_logger().info(f"gerbonara 사용, scale={scale}")
             gtp = GerberToPath(scale=scale)
             strokes = gtp.gerber_to_path(gerber_path)
+            self.get_logger().info(f"gerber_to_path 결과: {len(strokes)}개 stroke")
             strokes = gtp.normalize_to_origin(strokes)
         else:
             self.get_logger().warn("gerbonara 미설치 - 샘플 데이터 사용")
@@ -307,7 +309,7 @@ class BaseController(Node):
             self.get_logger().error("경로를 추출할 수 없습니다.")
             return
 
-        self.get_logger().info(f"추출된 경로: {len(strokes)}개")
+        self.get_logger().info(f"그릴 경로: {len(strokes)}개 (정규화 후)")
 
         # 글씨 쓸 위치로 이동
         self.get_logger().info("작업 위치로 이동")
@@ -442,9 +444,17 @@ def main(args=None):
             if not parsed_args.skip_grasp:
                 node.grisp_pen()
             node.get_logger().info(f"Gerber 파일 그리기: {parsed_args.gerber}")
-            for progress in node.drawGerberPath(parsed_args.gerber, parsed_args.scale):
-                node.get_logger().info(f"진행률: {progress * 100:.0f}%")
-            node.get_logger().info("Gerber 그리기 완료!")
+            node.get_logger().info(f"Scale: {parsed_args.scale}")
+            try:
+                stroke_count = 0
+                for progress in node.drawGerberPath(parsed_args.gerber, parsed_args.scale):
+                    stroke_count += 1
+                    node.get_logger().info(f"진행률: {progress * 100:.0f}% (stroke {stroke_count})")
+                node.get_logger().info(f"Gerber 그리기 완료! (총 {stroke_count}개 stroke)")
+            except Exception as gerber_err:
+                node.get_logger().error(f"Gerber 그리기 중 오류: {gerber_err}")
+                import traceback
+                node.get_logger().error(traceback.format_exc())
         else:
             # Action Server 모드
             rclpy.spin(node)
