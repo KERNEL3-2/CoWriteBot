@@ -112,6 +112,9 @@ class CommandParser:
             # 텍스트 추출
             text = params.get("text") or params.get("content") or params.get("message", "")
             normalized["text"] = str(text).strip()
+            # 스케일 추출
+            if "scale" in params:
+                normalized["scale"] = float(params["scale"])
 
         elif command == RobotCommand.LOAD_GERBER:
             # 파일 경로 추출

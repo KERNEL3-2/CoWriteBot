@@ -4,7 +4,7 @@ import subprocess
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QFileDialog, QStackedWidget,
                              QRadioButton, QMessageBox, QTextEdit, QProgressBar,
-                             QCheckBox, QDoubleSpinBox)
+                             QCheckBox, QDoubleSpinBox, QSizePolicy)
 from PyQt6.QtGui import QPixmap, QDragEnterEvent, QDropEvent, QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 import rclpy
@@ -55,7 +55,7 @@ class LoadingOverlay(QWidget):
         # 전체 레이아웃 (중앙 정렬)
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
+
         # 로딩 서클 (원형 느낌을 내기 위해 스타일링된 ProgressBar 사용)
         self.progress = QProgressBar()
         self.progress.setFixedSize(200, 20)
@@ -72,14 +72,45 @@ class LoadingOverlay(QWidget):
                 border-radius: 8px;
             }
         """)
-        
+
         # 로딩 텍스트
         self.label = QLabel("요청 처리 중...")
         self.label.setStyleSheet("color: white; font-weight: bold; font-size: 14px; margin-top: 10px;")
-        
+        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # 로그 표시 영역
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setMinimumHeight(180)
+        self.log_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.log_text.setStyleSheet("""
+            QTextEdit {
+                background-color: #1e1e1e;
+                color: #00ff00;
+                font-family: monospace;
+                font-size: 11px;
+                border: 1px solid #3daee9;
+                border-radius: 5px;
+                padding: 5px;
+            }
+        """)
+
         layout.addWidget(self.progress)
         layout.addWidget(self.label)
+        layout.addWidget(self.log_text)
+        layout.setContentsMargins(15, 10, 15, 10)  # 좌우 15px 여백
         self.setLayout(layout)
+
+    def append_log(self, text: str):
+        """로그 추가"""
+        self.log_text.append(text)
+        # 스크롤을 맨 아래로
+        scrollbar = self.log_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def clear_log(self):
+        """로그 초기화"""
+        self.log_text.clear()
 
     def paintEvent(self, event):
         # 반투명 검은 배경 그리기
@@ -162,6 +193,7 @@ class ServiceWorker(Node, QThread):
 class Sim2RealWorker(QThread):
     """sim2real 펜 잡기를 실행하는 워커 쓰레드"""
     finished_signal = pyqtSignal(int, str)  # 결과를 메인으로 보내는 신호
+    log_signal = pyqtSignal(str)  # 로그 출력 신호
 
     # sim2real 경로 설정
     HOME = os.path.expanduser("~")
@@ -191,51 +223,55 @@ class Sim2RealWorker(QThread):
         try:
             with open(self.TRIGGER_FILE, 'w') as f:
                 f.write('start')
-            print("[Sim2Real] 시작 트리거 전송됨")
+            self.log_signal.emit("[Sim2Real] 시작 트리거 전송됨")
         except Exception as e:
-            print(f"[Sim2Real] 트리거 파일 생성 실패: {e}")
+            self.log_signal.emit(f"[Sim2Real] 트리거 파일 생성 실패: {e}")
 
     def run(self):
         """sim2real 프로세스 실행"""
         self._clear_trigger()
 
         cmd = [
-            "python3", self.SIM2REAL_PATH,
+            "python3", "-u", self.SIM2REAL_PATH,  # -u: unbuffered output
             "--mode", "ik",
             "--calibration", self.CALIBRATION_PATH,
             "--checkpoint", self.checkpoint,
             "--trigger-file", self.TRIGGER_FILE,
         ]
 
-        print(f"[Sim2Real] 실행: {' '.join(cmd)}")
+        self.log_signal.emit(f"[Sim2Real] 실행 중...")
 
         try:
-            # 새 프로세스 그룹으로 실행 (종료 시 자식 프로세스도 함께 종료)
-            # stdout/stderr는 터미널에 직접 출력
+            # stdout/stderr를 PIPE로 캡처
             self.process = subprocess.Popen(
                 cmd,
                 cwd=os.path.dirname(self.SIM2REAL_PATH),
                 start_new_session=True,
-                stdout=sys.stdout,
-                stderr=sys.stderr,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
             )
 
-            # 프로세스 완료 대기 (timeout 적용)
-            try:
-                self.process.wait(timeout=self.timeout)
+            # 실시간으로 출력 읽기
+            import select
+            while self.process.poll() is None:
+                # 읽을 수 있는 데이터가 있는지 확인 (0.1초 타임아웃)
+                if select.select([self.process.stdout], [], [], 0.1)[0]:
+                    line = self.process.stdout.readline()
+                    if line:
+                        self.log_signal.emit(line.rstrip())
 
-                rc = self.process.returncode
-                # 종료 코드 처리: 0 또는 시그널로 종료(-6, -9, -15 등)도 성공으로 처리
-                if rc == 0 or rc in [-6, -9, -15, -2]:
-                    self.finished_signal.emit(SUCCEEDED, "Sim2Real 펜 잡기 완료!")
-                else:
-                    self.finished_signal.emit(FAILED, f"Sim2Real 실패 (코드: {rc})")
+            # 남은 출력 읽기
+            for line in self.process.stdout:
+                self.log_signal.emit(line.rstrip())
 
-            except subprocess.TimeoutExpired:
-                # 프로세스 그룹 전체 종료
-                import signal
-                os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
-                self.finished_signal.emit(FAILED, f"Sim2Real 타임아웃 ({self.timeout}초)")
+            rc = self.process.returncode
+            # 종료 코드 처리: 0 또는 시그널로 종료(-6, -9, -15 등)도 성공으로 처리
+            if rc == 0 or rc in [-6, -9, -15, -2]:
+                self.finished_signal.emit(SUCCEEDED, "Sim2Real 펜 잡기 완료!")
+            else:
+                self.finished_signal.emit(FAILED, f"Sim2Real 실패 (코드: {rc})")
 
         except FileNotFoundError:
             self.finished_signal.emit(UNEXPECTED_ERROR, f"sim2real 스크립트를 찾을 수 없습니다: {self.SIM2REAL_PATH}")
@@ -260,10 +296,12 @@ class ControllerWorker(QThread):
     """controller를 subprocess로 실행하는 워커"""
     finished_signal = pyqtSignal(int, str)
     progress_signal = pyqtSignal(float)
+    log_signal = pyqtSignal(str)  # 로그 출력 신호
 
-    def __init__(self, sentence: str, skip_grasp: bool = True, scale: float = 1.0):
+    def __init__(self, sentence: str = None, gerber_path: str = None, skip_grasp: bool = True, scale: float = 1.0):
         super().__init__()
         self.sentence = sentence
+        self.gerber_path = gerber_path
         self.skip_grasp = skip_grasp
         self.scale = scale
         self.process = None
@@ -271,27 +309,52 @@ class ControllerWorker(QThread):
     def run(self):
         """controller subprocess 실행"""
         # ROS2 환경 설정 포함 명령
+        if self.sentence:
+            mode_arg = f'--sentence "{self.sentence}"'
+            task_name = self.sentence
+            success_msg = "글씨 쓰기 완료!"
+        elif self.gerber_path:
+            mode_arg = f'--gerber "{self.gerber_path}"'
+            task_name = self.gerber_path
+            success_msg = "Gerber 그리기 완료!"
+        else:
+            self.finished_signal.emit(FAILED, "sentence 또는 gerber_path가 필요합니다")
+            return
+
         cmd = f"""
 source /opt/ros/humble/setup.bash
 source ~/doosan_ws/install/setup.bash
-ros2 run cowritebot controller --sentence "{self.sentence}" --scale {self.scale} {'--skip-grasp' if self.skip_grasp else ''}
+ros2 run cowritebot controller {mode_arg} --scale {self.scale} {'--skip-grasp' if self.skip_grasp else ''}
 """
-        print(f"[Controller] 실행: {self.sentence}")
+        self.log_signal.emit(f"[Controller] 실행: {task_name}")
 
         try:
-            # stdout/stderr는 터미널에 직접 출력
+            # stdout/stderr를 PIPE로 캡처
             self.process = subprocess.Popen(
                 ['bash', '-c', cmd],
                 start_new_session=True,
-                stdout=sys.stdout,
-                stderr=sys.stderr,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
             )
 
-            self.process.wait()
+            # 실시간으로 출력 읽기
+            import select
+            while self.process.poll() is None:
+                if select.select([self.process.stdout], [], [], 0.1)[0]:
+                    line = self.process.stdout.readline()
+                    if line:
+                        self.log_signal.emit(line.rstrip())
+
+            # 남은 출력 읽기
+            for line in self.process.stdout:
+                self.log_signal.emit(line.rstrip())
+
             rc = self.process.returncode
 
             if rc == 0:
-                self.finished_signal.emit(SUCCEEDED, "글씨 쓰기 완료!")
+                self.finished_signal.emit(SUCCEEDED, success_msg)
             else:
                 self.finished_signal.emit(FAILED, f"Controller 실패 (코드: {rc})")
 
@@ -317,7 +380,8 @@ class FileUploadBox(QLabel):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setText("\n이곳을 클릭하거나\n.gbr 파일을 드래그하여 업로드하세요.\n")
         self.set_default_style()
-        self.setFixedHeight(380)
+        self.setMinimumHeight(200)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setAcceptDrops(True)
         self.setWordWrap(True)
 
@@ -460,7 +524,8 @@ class MainUI(QWidget):
 
     def initUI(self):
         self.setWindowTitle('CowriteBot Controller')
-        self.setFixedSize(420, 630) # 높이를 조금 늘림
+        self.setMinimumSize(420, 550)
+        self.resize(450, 650)  # 기본 시작 크기
 
         # ★ 1. 전체 레이아웃 (Root Stack 사용)
         self.main_layout = QVBoxLayout(self)
@@ -497,7 +562,8 @@ class MainUI(QWidget):
         text_layout = QVBoxLayout()
         self.input_text = QTextEdit()
         self.input_text.setPlaceholderText("여기에 내용을 입력하세요...")
-        self.input_text.setFixedHeight(380)     # <-- 변경된 코드
+        self.input_text.setMinimumHeight(200)
+        self.input_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.input_text.setStyleSheet("""
             QTextEdit {
                 border: 1px solid #ccc;
@@ -530,7 +596,7 @@ class MainUI(QWidget):
         self.input_stack.addWidget(page_text)
         self.input_stack.addWidget(page_image)
         self.input_stack.addWidget(self.chat_widget)
-        input_page_layout.addWidget(self.input_stack)
+        input_page_layout.addWidget(self.input_stack, 1)  # stretch factor 1로 확장 가능
 
         # 펜 잡기 유무, scale 설정
         option_layout = QHBoxLayout()
@@ -707,22 +773,36 @@ class MainUI(QWidget):
             return
 
         # 2. 로딩 화면 켜기 & 버튼 비활성화
-        self.loading_overlay.label.setText("글씨 쓰는 중...")
+        self.loading_overlay.clear_log()
+        if command == RobotCommand.WRITE_TEXT:
+            self.loading_overlay.label.setText("글씨 쓰는 중...")
+        elif command == RobotCommand.START_SOLDERING:
+            self.loading_overlay.label.setText("회로 그리는 중...")
+        else:
+            self.loading_overlay.label.setText("작업 중...")
         self.loading_overlay.show()
         self.update_button_state(False)
 
         skip_grasp = not self.skip_grasp_check.isChecked()
-        scale = self.scale_spin_box.value()
+        # 채팅에서 scale이 지정된 경우 사용, 아니면 UI 값 사용
+        if params and params.get('scale') is not None:
+            scale = float(params.get('scale'))
+        else:
+            scale = self.scale_spin_box.value()
 
         # 3. 워커 쓰레드 시작 (subprocess 방식)
         if command == RobotCommand.WRITE_TEXT:
-            self.worker = ControllerWorker(contents, skip_grasp, scale)
+            self.worker = ControllerWorker(sentence=contents, skip_grasp=skip_grasp, scale=scale)
+        elif command == RobotCommand.START_SOLDERING:
+            self.worker = ControllerWorker(gerber_path=contents, skip_grasp=skip_grasp, scale=scale)
         else:
-            # Gerber 등 다른 명령은 기존 방식 (action server)
+            # 기타 명령은 action server 방식
             self.worker = ServiceWorker(command, contents, skip_grasp, scale)
 
         # 쓰레드가 끝났을 때 실행될 함수 연결
         self.worker.finished_signal.connect(self.on_processing)
+        if hasattr(self.worker, 'log_signal'):
+            self.worker.log_signal.connect(self.loading_overlay.append_log)
         if hasattr(self.worker, 'progress_signal'):
             self.worker.progress_signal.connect(self.set_progress)
         self.set_progress(0)
@@ -747,6 +827,7 @@ class MainUI(QWidget):
     def run_sim2real(self):
         """Sim2Real 펜 잡기 실행"""
         # 로딩 화면 표시 (시작 버튼 포함)
+        self.loading_overlay.clear_log()
         self.loading_overlay.label.setText("Sim2Real 대기 중...\n카메라 창에서 펜 위치 확인 후\n아래 버튼을 누르세요")
         self.loading_overlay.show()
         self.btn_sim2real.setEnabled(False)
@@ -760,6 +841,7 @@ class MainUI(QWidget):
         # Sim2Real 워커 시작
         self.sim2real_worker = Sim2RealWorker()
         self.sim2real_worker.finished_signal.connect(self.on_sim2real_finished)
+        self.sim2real_worker.log_signal.connect(self.loading_overlay.append_log)
         self.sim2real_worker.start()
 
     def trigger_sim2real_start(self):
@@ -824,9 +906,14 @@ class MainUI(QWidget):
         # 펜 잡기는 Sim2Real로 실행
         if cmd_type == RobotCommand.GRIP_PEN:
             self.run_sim2real()
+        elif cmd_type == RobotCommand.START_SOLDERING:
+            # 회로도 파일이 선택되어 있는지 확인
+            if not self.upload_box.file_path:
+                QMessageBox.warning(self, "파일 필요", "회로도 파일을 먼저 선택해주세요.\n'파일 업로드' 탭에서 .gbr 파일을 업로드하세요.")
+                return
+            self.run_process(command=cmd_type, params=params)
         elif cmd_type in [
             RobotCommand.WRITE_TEXT,
-            RobotCommand.START_SOLDERING,
             RobotCommand.GO_HOME,
             RobotCommand.RELEASE_PEN,
             RobotCommand.RUN_SEQUENCE,
