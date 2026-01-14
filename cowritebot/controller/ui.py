@@ -218,14 +218,19 @@ class Sim2RealWorker(QThread):
         except:
             pass
 
+    def _log(self, msg: str):
+        """UI와 터미널 모두에 로그 출력"""
+        print(msg, flush=True)
+        self.log_signal.emit(msg)
+
     def trigger_start(self):
         """UI에서 시작 트리거 (파일 생성)"""
         try:
             with open(self.TRIGGER_FILE, 'w') as f:
                 f.write('start')
-            self.log_signal.emit("[Sim2Real] 시작 트리거 전송됨")
+            self._log("[Sim2Real] 시작 트리거 전송됨")
         except Exception as e:
-            self.log_signal.emit(f"[Sim2Real] 트리거 파일 생성 실패: {e}")
+            self._log(f"[Sim2Real] 트리거 파일 생성 실패: {e}")
 
     def run(self):
         """sim2real 프로세스 실행"""
@@ -239,7 +244,7 @@ class Sim2RealWorker(QThread):
             "--trigger-file", self.TRIGGER_FILE,
         ]
 
-        self.log_signal.emit(f"[Sim2Real] 실행 중...")
+        self._log(f"[Sim2Real] 실행 중...")
 
         try:
             # stdout/stderr를 PIPE로 캡처
@@ -260,11 +265,11 @@ class Sim2RealWorker(QThread):
                 if select.select([self.process.stdout], [], [], 0.1)[0]:
                     line = self.process.stdout.readline()
                     if line:
-                        self.log_signal.emit(line.rstrip())
+                        self._log(line.rstrip())
 
             # 남은 출력 읽기
             for line in self.process.stdout:
-                self.log_signal.emit(line.rstrip())
+                self._log(line.rstrip())
 
             rc = self.process.returncode
             # 종료 코드 처리: 0 또는 시그널로 종료(-6, -9, -15 등)도 성공으로 처리
@@ -306,6 +311,11 @@ class ControllerWorker(QThread):
         self.scale = scale
         self.process = None
 
+    def _log(self, msg: str):
+        """UI와 터미널 모두에 로그 출력"""
+        print(msg, flush=True)
+        self.log_signal.emit(msg)
+
     def run(self):
         """controller subprocess 실행"""
         # ROS2 환경 설정 포함 명령
@@ -326,7 +336,7 @@ source /opt/ros/humble/setup.bash
 source ~/doosan_ws/install/setup.bash
 ros2 run cowritebot controller {mode_arg} --scale {self.scale} {'--skip-grasp' if self.skip_grasp else ''}
 """
-        self.log_signal.emit(f"[Controller] 실행: {task_name}")
+        self._log(f"[Controller] 실행: {task_name}")
 
         try:
             # stdout/stderr를 PIPE로 캡처
@@ -345,11 +355,11 @@ ros2 run cowritebot controller {mode_arg} --scale {self.scale} {'--skip-grasp' i
                 if select.select([self.process.stdout], [], [], 0.1)[0]:
                     line = self.process.stdout.readline()
                     if line:
-                        self.log_signal.emit(line.rstrip())
+                        self._log(line.rstrip())
 
             # 남은 출력 읽기
             for line in self.process.stdout:
-                self.log_signal.emit(line.rstrip())
+                self._log(line.rstrip())
 
             rc = self.process.returncode
 
