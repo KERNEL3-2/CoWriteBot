@@ -211,10 +211,13 @@ class Sim2RealWorker(QThread):
 
         try:
             # 새 프로세스 그룹으로 실행 (종료 시 자식 프로세스도 함께 종료)
+            # stdout/stderr는 터미널에 직접 출력
             self.process = subprocess.Popen(
                 cmd,
                 cwd=os.path.dirname(self.SIM2REAL_PATH),
                 start_new_session=True,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
             )
 
             # 프로세스 완료 대기 (timeout 적용)
@@ -276,9 +279,12 @@ ros2 run cowritebot controller --sentence "{self.sentence}" --scale {self.scale}
         print(f"[Controller] 실행: {self.sentence}")
 
         try:
+            # stdout/stderr는 터미널에 직접 출력
             self.process = subprocess.Popen(
                 ['bash', '-c', cmd],
                 start_new_session=True,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
             )
 
             self.process.wait()
