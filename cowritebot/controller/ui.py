@@ -1,3 +1,7 @@
+# matplotlib 버전 충돌 경고 억제 (다른 import 전에 설정)
+import warnings
+warnings.filterwarnings("ignore", message="Unable to import Axes3D")
+
 import sys
 import os
 import subprocess
