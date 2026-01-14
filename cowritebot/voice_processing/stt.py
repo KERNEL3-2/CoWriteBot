@@ -7,6 +7,34 @@ Google Speech Recognition 기반 음성 인식 모듈
 import speech_recognition as sr
 from typing import Callable, Optional
 import threading
+import os
+import sys
+from ctypes import CFUNCTYPE, c_char_p, c_int, cdll
+
+
+def _suppress_alsa_errors():
+    """ALSA 라이브러리의 에러 메시지 출력을 억제"""
+    try:
+        # ALSA 에러 핸들러 타입 정의
+        ERROR_HANDLER_FUNC = CFUNCTYPE(None, c_char_p, c_int, c_char_p, c_int, c_char_p)
+
+        def py_error_handler(filename, line, function, err, fmt):
+            pass  # 모든 ALSA 에러 메시지 무시
+
+        c_error_handler = ERROR_HANDLER_FUNC(py_error_handler)
+
+        # ALSA 라이브러리 로드 및 에러 핸들러 설정
+        asound = cdll.LoadLibrary('libasound.so.2')
+        asound.snd_lib_error_set_handler(c_error_handler)
+
+        # 핸들러가 가비지 컬렉션되지 않도록 참조 유지
+        _suppress_alsa_errors._handler = c_error_handler
+    except Exception:
+        pass  # ALSA가 없는 시스템에서는 무시
+
+
+# 모듈 로드 시 ALSA 에러 억제 활성화
+_suppress_alsa_errors()
 
 
 class SpeechRecognizer:
