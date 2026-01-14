@@ -820,11 +820,14 @@ class MainUI(QWidget):
         """
         cmd_type = command.command
         params = command.parameters
-        if cmd_type in [
-            RobotCommand.WRITE_TEXT, 
+
+        # 펜 잡기는 Sim2Real로 실행
+        if cmd_type == RobotCommand.GRIP_PEN:
+            self.run_sim2real()
+        elif cmd_type in [
+            RobotCommand.WRITE_TEXT,
             RobotCommand.START_SOLDERING,
             RobotCommand.GO_HOME,
-            RobotCommand.GRIP_PEN,
             RobotCommand.RELEASE_PEN,
             RobotCommand.RUN_SEQUENCE,
         ]:
